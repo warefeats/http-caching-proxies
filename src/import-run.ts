@@ -286,46 +286,37 @@ export function validateMetadata(raw: unknown): RunMetadata {
 }
 
 if (import.meta.main) {
-  const { readFileSync, writeFileSync } = await import("fs");
+  const { readFileSync, writeFileSync, mkdirSync, existsSync } = await import("fs");
   const { resolve, join } = await import("path");
-
-  const catalogArg = process.argv.find((a) => a.startsWith("--catalog="))?.split("=")[1];
-  if (!catalogArg) {
-    console.error("Usage: bun run src/import-run.ts --catalog=<path-to-benchmarks.json> [--results=<path>] [--metadata=<path>]");
-    process.exit(1);
-  }
 
   const root = join(import.meta.dirname!, "..");
   const resultsArg = process.argv.find((a) => a.startsWith("--results="))?.split("=")[1];
   const metadataArg = process.argv.find((a) => a.startsWith("--metadata="))?.split("=")[1];
   const resultsPath = resultsArg ? resolve(resultsArg) : join(root, "results.json");
   const metadataPath = metadataArg ? resolve(metadataArg) : join(root, "metadata.json");
-  const catalogPath = resolve(catalogArg);
 
   const rawResults = validateResults(JSON.parse(readFileSync(resultsPath, "utf8")));
   const rawMetadata = validateMetadata(JSON.parse(readFileSync(metadataPath, "utf8")));
 
   const run = importRun(rawResults, rawMetadata);
-  const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+  const runPath = `runs/${run.id}.json`;
 
-  const benchIdx = catalog.benchmarks.findIndex((b: { id: string }) => b.id === "proxy-hls-2026-08");
-  if (benchIdx < 0) {
-    console.error("Benchmark entry proxy-hls-2026-08 not found in catalog");
+  mkdirSync(join(root, "runs"), { recursive: true });
+  writeFileSync(join(root, runPath), JSON.stringify({ schemaVersion: 1, ...run }, null, 2) + "\n");
+
+  const benchmarkPath = join(root, "benchmark.json");
+  if (!existsSync(benchmarkPath)) {
+    console.error(`benchmark.json not found at ${benchmarkPath}`);
     process.exit(1);
   }
-
-  const bench = catalog.benchmarks[benchIdx];
-  const runs: BenchmarkRun[] = bench.runs ?? [];
-  const existingIdx = runs.findIndex((r: BenchmarkRun) => r.id === run.id);
-  if (existingIdx >= 0) {
-    runs[existingIdx] = run;
-  } else {
-    runs.push(run);
+  const benchmark = JSON.parse(readFileSync(benchmarkPath, "utf8"));
+  const runs: string[] = benchmark.runs ?? [];
+  if (!runs.includes(runPath)) {
+    runs.push(runPath);
+    benchmark.runs = runs;
+    writeFileSync(benchmarkPath, JSON.stringify(benchmark, null, 2) + "\n");
   }
-  bench.runs = runs;
 
-  catalog.generatedAt = new Date().toISOString();
-  writeFileSync(catalogPath, JSON.stringify(catalog, null, 2) + "\n");
-  console.log(`Imported cloud run ${run.id} into ${catalogPath}`);
+  console.log(`Wrote ${runPath}`);
   console.log(`  ${run.sections?.length ?? 0} sections, environment: ${run.label}`);
 }
