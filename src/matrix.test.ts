@@ -7,12 +7,12 @@ describe("buildMatrix", () => {
     expect(m.length).toBe(22);
   });
 
-  test("smoke matrix filters to plaintext hit-path-rps only", () => {
+  test("smoke matrix filters to plaintext, all workloads except segment-serve", () => {
     const m = buildMatrix(true);
-    expect(m.length).toBe(3);
+    expect(m.length).toBe(9);
     for (const s of m) {
       expect(s.topology).toBe("plaintext");
-      expect(s.workload).toBe("hit-path-rps");
+      expect(s.workload).not.toBe("segment-serve");
     }
   });
 

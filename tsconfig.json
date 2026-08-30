@@ -15,9 +15,9 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "ES2022",
-    "rootDir": "src",
+    "rootDir": ".",
     "outDir": "dist",
     "types": ["bun"]
   },
-  "include": ["src"]
+  "include": ["src", "test"]
 }
