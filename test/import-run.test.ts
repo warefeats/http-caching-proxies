@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
 import { importRun, validateResults, validateMetadata } from "../src/import-run";
 import type { RawResults, RunMetadata } from "../src/import-run";
 
@@ -169,5 +171,63 @@ describe("validateMetadata", () => {
 
   test("rejects missing runId", () => {
     expect(() => validateMetadata({ engineType: "c7g.metal" })).toThrow("missing runId");
+  });
+});
+
+describe("run file idempotency", () => {
+  const tmpDir = join(import.meta.dirname!, ".tmp-test-idempotency");
+
+  function setup() {
+    rmSync(tmpDir, { recursive: true, force: true });
+    mkdirSync(join(tmpDir, "runs"), { recursive: true });
+    writeFileSync(join(tmpDir, "benchmark.json"), JSON.stringify({
+      schemaVersion: 1,
+      id: "proxy-hls-2026-08",
+      slug: "http-caching-proxies-hls",
+      runs: [],
+    }, null, 2) + "\n");
+  }
+
+  function writeRun(root: string, run: ReturnType<typeof importRun>) {
+    const runPath = `runs/${run.id}.json`;
+    writeFileSync(join(root, runPath), JSON.stringify({ schemaVersion: 1, ...run }, null, 2) + "\n");
+    const benchmark = JSON.parse(readFileSync(join(root, "benchmark.json"), "utf8"));
+    const runs: string[] = benchmark.runs ?? [];
+    if (!runs.includes(runPath)) {
+      runs.push(runPath);
+      benchmark.runs = runs;
+      writeFileSync(join(root, "benchmark.json"), JSON.stringify(benchmark, null, 2) + "\n");
+    }
+    return runPath;
+  }
+
+  test("writing the same run twice does not duplicate the runs entry", () => {
+    setup();
+    const run = importRun(sampleResults(), sampleMeta());
+
+    const path1 = writeRun(tmpDir, run);
+    const path2 = writeRun(tmpDir, run);
+
+    expect(path1).toBe(path2);
+    const benchmark = JSON.parse(readFileSync(join(tmpDir, "benchmark.json"), "utf8"));
+    expect(benchmark.runs.length).toBe(1);
+    expect(benchmark.runs[0]).toBe(path1);
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("writing two different runs appends both", () => {
+    setup();
+    const run1 = importRun(sampleResults(), sampleMeta());
+    const meta2 = { ...sampleMeta(), runId: "bench-20260831-120000-43", timestamp: "2026-08-31T12:00:00Z" };
+    const run2 = importRun(sampleResults(), meta2);
+
+    writeRun(tmpDir, run1);
+    writeRun(tmpDir, run2);
+
+    const benchmark = JSON.parse(readFileSync(join(tmpDir, "benchmark.json"), "utf8"));
+    expect(benchmark.runs.length).toBe(2);
+
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 });

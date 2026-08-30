@@ -21,11 +21,11 @@ clean:
         docker compose -f "$f" -p "$p" down -v --remove-orphans 2>/dev/null || true
     done
 
-import catalog:
-    bun run src/import.ts --catalog={{catalog}}
+import result="results.json":
+    bun run src/import.ts --results={{result}}
 
-import-run catalog:
-    bun run src/import-run.ts --catalog={{catalog}}
+import-run result="results.json":
+    bun run src/import-run.ts --results={{result}}
 
 # --- cloud benchmark rig ---
 

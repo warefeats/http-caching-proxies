@@ -48,19 +48,21 @@ bun run src/run.ts --workload=miss-storm
 
 Results are written incrementally to `results.json`.
 
-## Importing results into the site
+## Publishing results
 
-The import script reads `results.json` and writes a benchmark entry into the warefeats.com catalog:
-
-```sh
-just import ../warefeats.com/web/public/data/benchmarks.json
-```
-
-Or directly:
+The import script reads `results.json` and writes a run file under `runs/`, updating `benchmark.json` to reference it:
 
 ```sh
-bun run src/import.ts --catalog=../warefeats.com/web/public/data/benchmarks.json
+just import
 ```
+
+Or with an explicit results path:
+
+```sh
+bun run src/import.ts --results=results.json
+```
+
+To publish to the site, commit the new run file and `benchmark.json`, then in the site repo (`warefeats/warefeats.com`) bump this slug's `ref` in `web/data/registry.json` to the new SHA, run `bun run sync`, and merge.
 
 ## Results
 
@@ -155,19 +157,21 @@ gh workflow run build-vinyl.yml -f vinyl_ref=main
 
 This pushes `ghcr.io/warefeats/vinyl-cache:<ref>` and `:latest`.
 
-### Import cloud results into the site catalog
+### Import cloud results
 
 Download the results artifact from the workflow run, then:
 
 ```sh
-just import-run ../warefeats.com/web/public/data/benchmarks.json
+just import-run
 ```
 
 Or with explicit paths:
 
 ```sh
-bun run src/import-run.ts --catalog=../warefeats.com/web/public/data/benchmarks.json --results=results.json --metadata=metadata.json
+bun run src/import-run.ts --results=results.json --metadata=metadata.json
 ```
+
+This writes a run file under `runs/` and updates `benchmark.json`. Commit and follow the publish flow described above.
 
 ### Tear down
 

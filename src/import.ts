@@ -1,15 +1,9 @@
-import { readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 
-const catalogArg = process.argv.find((a) => a.startsWith("--catalog="))?.split("=")[1];
-if (!catalogArg) {
-  console.error("Usage: bun run src/import.ts --catalog=<path-to-benchmarks.json>");
-  process.exit(1);
-}
-
 const root = join(import.meta.dirname!, "..");
-const resultsPath = join(root, "results.json");
-const benchmarksPath = resolve(catalogArg);
+const resultsArg = process.argv.find((a) => a.startsWith("--results="))?.split("=")[1];
+const resultsPath = resultsArg ? resolve(resultsArg) : join(root, "results.json");
 
 interface RawResult {
   label: string;
@@ -72,19 +66,11 @@ const ENGINE_SHORT_VERSIONS: Map<string, string> = new Map([
   ["nginx", "stable"],
 ]);
 
-/** Official, unmodified product marks (self-hosted under web/public/logos) and brand colors for the charts. */
 const ENGINE_BRAND: Record<string, { logo: string; color: string; homepage: string }> = {
   varnish: { logo: "/logos/varnish-cache.svg", color: "#0763ED", homepage: "https://www.varnish.org" },
   vinyl: { logo: "/logos/vinyl-cache.svg", color: "#660066", homepage: "https://vinyl-cache.org" },
   nginx: { logo: "/logos/nginx.svg", color: "#009639", homepage: "https://nginx.org" },
 };
-
-const TRADEMARKS = [
-  "Logos identify the products under test and imply no endorsement.",
-  "Varnish is a registered trademark of Varnish Software AB.",
-  "NGINX is a trademark of F5, Inc.",
-  "Vinyl Cache logo: CC BY 4.0 Rhubarbe.design.",
-];
 
 function buildW1Section(results: RawResult[]) {
   const w1 = results.filter((r) => r.workload === "hit-path-rps");
@@ -297,27 +283,21 @@ function buildW4Section(results: RawResult[]) {
 }
 
 const raw: { results: RawResult[] } = JSON.parse(readFileSync(resultsPath, "utf8"));
-const catalog = JSON.parse(readFileSync(benchmarksPath, "utf8"));
 
 const w1 = buildW1Section(raw.results);
 const w2 = buildW2Section(raw.results);
 const w3 = buildW3Section(raw.results);
 const w4 = buildW4Section(raw.results);
 
-const proxyEntry = {
-  id: "proxy-hls-2026-08",
-  slug: "http-caching-proxies-hls",
-  category: "Caching proxies",
-  title: "HTTP caching proxies for HLS delivery",
-  deck: "Varnish, Vinyl, and NGINX across four HLS workloads: hit-path TTFB, segment serve, miss-storm coalescing, and origin-flap grace.",
-  publishedAt: "2026-08-29",
-  unit: "ms",
-  lowerIsBetter: true,
-  verdict: {
-    winnerId: "mixed",
-    headline: "No single engine dominated all four workloads",
-    summary: `${w1.verdict.winnerId === "mixed" ? "No clear hit-path winner" : `${w1.candidates.find((c) => c.id === w1.verdict.winnerId)?.name} led on hit-path`}, ${w2.candidates.find((c) => c.id === w2.verdict.winnerId)?.name} led on segment serve, all three coalesced 200 concurrent requests to one origin fetch, and all three maintained 100% grace under origin failure.`,
-  },
+const publishedAt = new Date().toISOString().split("T")[0]!;
+const runId = `${publishedAt}-m2max`;
+const runPath = `runs/${runId}.json`;
+
+const run = {
+  schemaVersion: 1,
+  id: runId,
+  label: "M2 Max (local)",
+  publishedAt,
   environment: {
     machine: "MacBook Pro",
     chip: "Apple M2 Max",
@@ -334,30 +314,27 @@ const proxyEntry = {
     cacheState: "Warm cache after three curl requests (W1/W2) or cold by construction (W3)",
     output: "TTFB via oha 1.16.0 with --latency-correction",
   },
-  candidates: [],
+  candidates: [] as unknown[],
   sections: [w1, w2, w3, w4],
-  trademarks: TRADEMARKS,
-  limitations: [
-    "Varnish Cache and Vinyl Cache share a maintainer team and a common ancestor commit (63806461); this benchmark measures shipped binaries and configuration only.",
-    "Docker/OrbStack on an M2 Max is a virtualized arm64 rig, not bare-metal x86_64; numbers are relative only.",
-    "Vinyl c67fd5f57 has no in-process TLS listener in this configuration; its TLS-topology coverage is PROXYv2-only.",
-    "NGINX hit/miss accounting is log-derived ($upstream_cache_status), coarser than varnishstat/vinylstat's live counters.",
-    "Purge/ban stampede is out of scope this pass (queued).",
-    "Client, terminator, engine, and origin share one host's CPU/network stack — results reflect relative efficiency under shared contention, not isolated network performance.",
-    "Traffic is synthetic HLS-shaped load, not a captured production trace.",
-  ],
 };
 
-const idx = catalog.benchmarks.findIndex((b: { id: string }) => b.id === "proxy-hls-2026-08");
-if (idx >= 0) {
-  catalog.benchmarks[idx] = proxyEntry;
-} else {
-  catalog.benchmarks.push(proxyEntry);
+mkdirSync(join(root, "runs"), { recursive: true });
+writeFileSync(join(root, runPath), JSON.stringify(run, null, 2) + "\n");
+
+const benchmarkPath = join(root, "benchmark.json");
+if (!existsSync(benchmarkPath)) {
+  console.error(`benchmark.json not found at ${benchmarkPath}`);
+  process.exit(1);
+}
+const benchmark = JSON.parse(readFileSync(benchmarkPath, "utf8"));
+const runs: string[] = benchmark.runs ?? [];
+if (!runs.includes(runPath)) {
+  runs.push(runPath);
+  benchmark.runs = runs;
+  writeFileSync(benchmarkPath, JSON.stringify(benchmark, null, 2) + "\n");
 }
 
-catalog.generatedAt = new Date().toISOString();
-writeFileSync(benchmarksPath, JSON.stringify(catalog, null, 2) + "\n");
-console.log(`Updated ${benchmarksPath}`);
+console.log(`Wrote ${runPath}`);
 console.log(`  W1: ${w1.candidates.length} candidates, winner: ${w1.verdict.winnerId}`);
 console.log(`  W2: ${w2.candidates.length} candidates, winner: ${w2.verdict.winnerId}`);
 console.log(`  W3: ${w3.candidates.length} candidates`);

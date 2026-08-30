@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "proxy-hls-2026-08",
+  "slug": "http-caching-proxies-hls",
+  "category": "Caching proxies",
+  "title": "HTTP caching proxies for HLS delivery",
+  "deck": "Varnish, Vinyl, and NGINX across four HLS workloads: hit-path TTFB, segment serve, miss-storm coalescing, and origin-flap grace.",
+  "unit": "ms",
+  "lowerIsBetter": true,
+  "verdict": {
+    "winnerId": "mixed",
+    "headline": "No single engine dominated all four workloads",
+    "summary": "Vinyl c67fd5f57 (plaintext) led on hit-path, Varnish 9.0.3 (plaintext) led on segment serve, all three coalesced 200 concurrent requests to one origin fetch, and all three maintained 100% grace under origin failure."
+  },
+  "trademarks": [
+    "Logos identify the products under test and imply no endorsement.",
+    "Varnish is a registered trademark of Varnish Software AB.",
+    "NGINX is a trademark of F5, Inc.",
+    "Vinyl Cache logo: CC BY 4.0 Rhubarbe.design."
+  ],
+  "limitations": [
+    "Varnish Cache and Vinyl Cache share a maintainer team and a common ancestor commit (63806461); this benchmark measures shipped binaries and configuration only.",
+    "Docker/OrbStack on an M2 Max is a virtualized arm64 rig, not bare-metal x86_64; numbers are relative only.",
+    "Vinyl c67fd5f57 has no in-process TLS listener in this configuration; its TLS-topology coverage is PROXYv2-only.",
+    "NGINX hit/miss accounting is log-derived ($upstream_cache_status), coarser than varnishstat/vinylstat's live counters.",
+    "Purge/ban stampede is out of scope this pass (queued).",
+    "Client, terminator, engine, and origin share one host's CPU/network stack — results reflect relative efficiency under shared contention, not isolated network performance.",
+    "Traffic is synthetic HLS-shaped load, not a captured production trace."
+  ],
+  "runs": [
+    "runs/2026-08-29-m2max.json"
+  ]
+}
