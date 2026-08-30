@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { importRun, validateResults, validateMetadata } from "../src/import-run";
+import { importRun, rigSlug, validateResults, validateMetadata } from "../src/import-run";
 import type { RawResults, RunMetadata } from "../src/import-run";
 
 function sampleResults(): RawResults {
@@ -74,7 +74,7 @@ describe("importRun", () => {
   test("converts results and metadata to a BenchmarkRun", () => {
     const run = importRun(sampleResults(), sampleMeta());
 
-    expect(run.id).toBe("bench-20260830-120000-42");
+    expect(run.id).toBe("2026-08-30-ec2-cluster-c7g-metal-2-c7g-xlarge");
     expect(run.label).toContain("c7g.metal");
     expect(run.environment.machine).toContain("c7g.metal");
     expect(run.environment.chip).toContain("Graviton3");
@@ -114,9 +114,10 @@ describe("importRun", () => {
     expect(() => importRun(empty, sampleMeta())).toThrow("No results");
   });
 
-  test("rejects missing runId", () => {
-    const badMeta: RunMetadata = { ...sampleMeta(), runId: "" };
-    expect(() => importRun(sampleResults(), badMeta)).toThrow("Missing runId");
+  test("derives id from generatedAt and machine, not from meta.runId", () => {
+    const altMeta: RunMetadata = { ...sampleMeta(), runId: "completely-different" };
+    const run = importRun(sampleResults(), altMeta);
+    expect(run.id).toBe("2026-08-30-ec2-cluster-c7g-metal-2-c7g-xlarge");
   });
 
   test("sections have non-empty tests with expected ids", () => {
@@ -174,6 +175,35 @@ describe("validateMetadata", () => {
   });
 });
 
+describe("id stability", () => {
+  test("same input always produces the same id (no clock dependency)", () => {
+    const run1 = importRun(sampleResults(), sampleMeta());
+    const run2 = importRun(sampleResults(), sampleMeta());
+    expect(run1.id).toBe(run2.id);
+    expect(run1.publishedAt).toBe(run2.publishedAt);
+  });
+
+  test("id changes when generatedAt date changes", () => {
+    const run1 = importRun(sampleResults(), sampleMeta());
+    const results2 = { ...sampleResults(), generatedAt: "2026-09-15T00:00:00Z" };
+    const run2 = importRun(results2, sampleMeta());
+    expect(run1.id).not.toBe(run2.id);
+    expect(run2.publishedAt).toBe("2026-09-15");
+  });
+
+  test("id changes when machine differs", () => {
+    const run1 = importRun(sampleResults(), sampleMeta());
+    const meta2 = { ...sampleMeta(), engineType: "c7g.4xlarge", clientType: "c7g.xlarge" };
+    const run2 = importRun(sampleResults(), meta2);
+    expect(run1.id).not.toBe(run2.id);
+  });
+
+  test("rigSlug lowercases and dashes a machine string", () => {
+    expect(rigSlug("MacBook Pro")).toBe("macbook-pro");
+    expect(rigSlug("EC2 cluster (c7g.metal + 2× c7g.xlarge)")).toBe("ec2-cluster-c7g-metal-2-c7g-xlarge");
+  });
+});
+
 describe("run file idempotency", () => {
   const tmpDir = join(import.meta.dirname!, ".tmp-test-idempotency");
 
@@ -219,8 +249,8 @@ describe("run file idempotency", () => {
   test("writing two different runs appends both", () => {
     setup();
     const run1 = importRun(sampleResults(), sampleMeta());
-    const meta2 = { ...sampleMeta(), runId: "bench-20260831-120000-43", timestamp: "2026-08-31T12:00:00Z" };
-    const run2 = importRun(sampleResults(), meta2);
+    const results2 = { ...sampleResults(), generatedAt: "2026-08-31T00:00:00Z" };
+    const run2 = importRun(results2, sampleMeta());
 
     writeRun(tmpDir, run1);
     writeRun(tmpDir, run2);

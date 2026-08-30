@@ -44,6 +44,10 @@ function stats(samples: number[]) {
   };
 }
 
+function rigSlug(machine: string): string {
+  return machine.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
 function candidateId(engine: string, topology: string): string {
   return `${engine}-${topology}`;
 }
@@ -282,15 +286,16 @@ function buildW4Section(results: RawResult[]) {
   };
 }
 
-const raw: { results: RawResult[] } = JSON.parse(readFileSync(resultsPath, "utf8"));
+const raw: { generatedAt: string; results: RawResult[] } = JSON.parse(readFileSync(resultsPath, "utf8"));
 
 const w1 = buildW1Section(raw.results);
 const w2 = buildW2Section(raw.results);
 const w3 = buildW3Section(raw.results);
 const w4 = buildW4Section(raw.results);
 
-const publishedAt = new Date().toISOString().split("T")[0]!;
-const runId = `${publishedAt}-m2max`;
+const machine = "MacBook Pro";
+const publishedAt = raw.generatedAt.split("T")[0]!;
+const runId = `${publishedAt}-${rigSlug(machine)}`;
 const runPath = `runs/${runId}.json`;
 
 const run = {
@@ -299,7 +304,7 @@ const run = {
   label: "M2 Max (local)",
   publishedAt,
   environment: {
-    machine: "MacBook Pro",
+    machine,
     chip: "Apple M2 Max",
     cores: "12 CPU cores",
     memory: "96 GB",
