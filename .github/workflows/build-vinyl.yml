@@ -29,7 +29,8 @@ jobs:
           git init vinyl-src
           cd vinyl-src
           git remote add origin "${{ inputs.vinyl_repo }}"
-          git fetch --depth 1 origin "${{ inputs.vinyl_ref }}"
+          # the upstream serves dumb HTTP, which cannot do shallow fetches
+          git fetch origin "${{ inputs.vinyl_ref }}"
           git checkout FETCH_HEAD
 
       - name: Log in to GHCR
