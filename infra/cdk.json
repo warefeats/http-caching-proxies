@@ -1,0 +1,6 @@
+{
+  "app": "bun run bin/proxy-bench.ts",
+  "context": {
+    "@aws-cdk/aws-s3:createDefaultLoggingPolicy": true
+  }
+}

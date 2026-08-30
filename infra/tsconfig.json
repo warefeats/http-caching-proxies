@@ -5,6 +5,7 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
+    "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "noEmit": true,
@@ -15,9 +16,7 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "ES2022",
-    "rootDir": ".",
-    "outDir": "dist",
     "types": ["bun"]
   },
-  "include": ["src", "test"]
+  "include": ["bin", "lib", "test"]
 }

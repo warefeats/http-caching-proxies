@@ -1,0 +1,4 @@
+services:
+  engine:
+    build: !reset null
+    image: ghcr.io/warefeats/vinyl-cache:latest

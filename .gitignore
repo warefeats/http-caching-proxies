@@ -11,3 +11,5 @@ coverage/
 CLAUDE.md
 CLAUDE.local.md
 .claude/
+cdk.out/
+infra-outputs.json
