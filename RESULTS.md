@@ -18,10 +18,10 @@ MacBook Pro, Apple M2 Max, 12 CPU cores, 96 GB, macOS 26.0 (arm64). Docker via O
 
 ```sh
 # Per-engine batches (incremental saves, --resume skips completed cells)
-# The vinyl engine builds from source: export VINYL_CACHE_DIR (a Vinyl Cache checkout) or run through `just proxy-bench`, which loads it from the repo .env.
-bun run --cwd services/proxy-bench src/run.ts --engine=varnish
-bun run --cwd services/proxy-bench src/run.ts --engine=vinyl
-bun run --cwd services/proxy-bench src/run.ts --engine=nginx
+# The vinyl engine builds from source: set VINYL_CACHE_DIR in .env to a Vinyl Cache checkout.
+bun run src/run.ts --engine=varnish
+bun run src/run.ts --engine=vinyl
+bun run src/run.ts --engine=nginx
 ```
 
 ## Matrix
@@ -134,4 +134,4 @@ The initial run had two harness defects that produced misleading W3 data:
 
 ## Raw samples
 
-Full per-cell JSON with samplesMs arrays, engineStats, and metrics blocks: `services/proxy-bench/results.json`
+Full per-cell JSON with samplesMs arrays, engineStats, and metrics blocks: `results.json`

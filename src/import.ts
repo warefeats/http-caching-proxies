@@ -1,9 +1,15 @@
 import { readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
+
+const catalogArg = process.argv.find((a) => a.startsWith("--catalog="))?.split("=")[1];
+if (!catalogArg) {
+  console.error("Usage: bun run src/import.ts --catalog=<path-to-benchmarks.json>");
+  process.exit(1);
+}
 
 const root = join(import.meta.dirname!, "..");
 const resultsPath = join(root, "results.json");
-const benchmarksPath = join(root, "..", "..", "web", "public", "data", "benchmarks.json");
+const benchmarksPath = resolve(catalogArg);
 
 interface RawResult {
   label: string;
