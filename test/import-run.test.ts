@@ -21,7 +21,7 @@ function sampleResults(): RawResults {
         achievedRps: 5000,
         errorRate: 0,
         engineStats: { rssMb: 100 },
-        metrics: { p50_ttfb: { value: 0.55, unit: "ms" } },
+        metrics: { p50_ttfb: { value: 0.55, unit: "ms" }, p99_ttfb: { value: 0.6, unit: "ms" } },
       },
       {
         label: "vinyl/plaintext/hit-path-rps",
@@ -34,7 +34,7 @@ function sampleResults(): RawResults {
         achievedRps: 5000,
         errorRate: 0,
         engineStats: { rssMb: 110 },
-        metrics: { p50_ttfb: { value: 0.65, unit: "ms" } },
+        metrics: { p50_ttfb: { value: 0.65, unit: "ms" }, p99_ttfb: { value: 0.7, unit: "ms" } },
       },
       {
         label: "nginx/plaintext/hit-path-rps",
@@ -47,7 +47,7 @@ function sampleResults(): RawResults {
         achievedRps: 5000,
         errorRate: 0,
         engineStats: { rssMb: 6 },
-        metrics: { p50_ttfb: { value: 0.75, unit: "ms" } },
+        metrics: { p50_ttfb: { value: 0.75, unit: "ms" }, p99_ttfb: { value: 0.8, unit: "ms" } },
       },
     ],
     failures: [],
@@ -115,6 +115,32 @@ describe("importRun", () => {
   test("rejects missing runId", () => {
     const badMeta: RunMetadata = { ...sampleMeta(), runId: "" };
     expect(() => importRun(sampleResults(), badMeta)).toThrow("Missing runId");
+  });
+
+  test("sections have non-empty tests with expected ids", () => {
+    const run = importRun(sampleResults(), sampleMeta());
+    const section = run.sections![0]!;
+
+    expect(section.tests).toBeDefined();
+    expect(section.tests.length).toBeGreaterThanOrEqual(1);
+    const testIds = section.tests.map((t) => t.id);
+    expect(testIds).toContain("p50-ttfb");
+    expect(testIds).toContain("p99-ttfb");
+    for (const t of section.tests) {
+      expect(t.results.length).toBe(section.candidates.length);
+      for (const r of t.results) {
+        expect(typeof r.value).toBe("number");
+      }
+    }
+  });
+
+  test("throws when results produce no sections (partial run)", () => {
+    const raw: RawResults = {
+      ...sampleResults(),
+      results: [sampleResults().results[0]!],
+      resultCount: 1,
+    };
+    expect(() => importRun(raw, sampleMeta())).toThrow("No benchmark sections");
   });
 });
 

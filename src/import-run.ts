@@ -19,6 +19,15 @@ interface Candidate {
   metrics?: Record<string, { value: number; unit: string; label?: string }>;
 }
 
+interface BenchmarkTest {
+  id: string;
+  title: string;
+  description: string;
+  unit: string;
+  lowerIsBetter: boolean;
+  results: Array<{ candidateId: string; value: number }>;
+}
+
 interface BenchmarkSection {
   id: string;
   title: string;
@@ -27,6 +36,7 @@ interface BenchmarkSection {
   lowerIsBetter: boolean;
   verdict: { winnerId: string; headline: string; summary: string };
   candidates: Candidate[];
+  tests: BenchmarkTest[];
 }
 
 export interface BenchmarkRun {
@@ -131,6 +141,7 @@ export function importRun(raw: RawResults, meta: RunMetadata): BenchmarkRun {
   if (!meta.runId) throw new Error("Missing runId in metadata");
 
   const sections = buildSections(raw.results);
+  if (!sections.length) throw new Error("No benchmark sections could be built from the results (partial run?)");
 
   return {
     id: meta.runId,
@@ -154,6 +165,30 @@ export function importRun(raw: RawResults, meta: RunMetadata): BenchmarkRun {
     publishedAt: meta.timestamp.split("T")[0]!,
     sections,
   };
+}
+
+function buildTests(workload: string, candidates: Candidate[]): BenchmarkTest[] {
+  const tests: BenchmarkTest[] = [];
+
+  const add = (key: string, id: string, title: string, desc: string, unit: string, lower: boolean) => {
+    if (!candidates.some((c) => c.metrics?.[key])) return;
+    tests.push({
+      id, title, description: desc, unit, lowerIsBetter: lower,
+      results: candidates.map((c) => ({ candidateId: c.id, value: c.metrics?.[key]?.value ?? 0 })),
+    });
+  };
+
+  add("p50_ttfb", "p50-ttfb", "p50 TTFB", "50th-percentile time to first byte", "ms", true);
+  add("p99_ttfb", "p99-ttfb", "p99 TTFB", "99th-percentile time to first byte", "ms", true);
+
+  if (workload === "miss-storm") {
+    add("coalescing_efficiency", "coalescing", "Coalescing efficiency", "Ratio of concurrent clients to origin requests", "x", false);
+  }
+  if (workload === "origin-flap") {
+    add("grace_ratio", "grace-ratio", "Grace hit ratio", "Percentage of requests served from stale cache during origin failure", "%", false);
+  }
+
+  return tests;
 }
 
 function buildSections(results: RawResult[]): BenchmarkSection[] {
@@ -192,6 +227,7 @@ function buildSections(results: RawResult[]): BenchmarkSection[] {
         summary: `${best.name} posted ${best.statistics.medianMs} ms median.`,
       },
       candidates,
+      tests: buildTests(workload, candidates),
     });
   }
 
