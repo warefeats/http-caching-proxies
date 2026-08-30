@@ -43,10 +43,10 @@ jobs:
       run_id: ${{ steps.launch.outputs.run_id }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ inputs.region }}
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
@@ -296,7 +296,7 @@ jobs:
 
       - name: Upload results artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-results-${{ steps.launch.outputs.run_id }}
           path: /tmp/bench-output/
@@ -326,7 +326,7 @@ jobs:
       id-token: write
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ inputs.region || 'us-east-1' }}
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
