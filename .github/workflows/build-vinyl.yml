@@ -32,6 +32,7 @@ jobs:
           # the upstream serves dumb HTTP, which cannot do shallow fetches
           git fetch origin "${{ inputs.vinyl_ref }}"
           git checkout FETCH_HEAD
+          git submodule update --init --recursive
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
