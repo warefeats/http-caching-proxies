@@ -31,7 +31,7 @@ jobs:
 
       - name: Install oha
         run: |
-          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.16.0/oha-linux-aarch64 \
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.16.0/oha-linux-arm64 \
             -o /usr/local/bin/oha
           chmod +x /usr/local/bin/oha
 
