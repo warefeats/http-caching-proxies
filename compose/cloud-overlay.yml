@@ -5,5 +5,5 @@ services:
     deploy:
       resources:
         limits:
-          cpus: ""
-          memory: ""
+          cpus: !reset null
+          memory: !reset null
