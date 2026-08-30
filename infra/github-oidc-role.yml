@@ -39,7 +39,7 @@ Resources:
     Properties:
       RoleName: http-caching-proxies-github-deploy
       Description: Deploys the proxy-bench CDK stack and runs cloud benchmarks.
-      MaxSessionDuration: 3600
+      MaxSessionDuration: 7200
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
