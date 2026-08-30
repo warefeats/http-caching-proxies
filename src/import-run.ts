@@ -113,6 +113,10 @@ function r(n: number, d: number): number {
   return Math.round(n * f) / f;
 }
 
+export function rigSlug(machine: string): string {
+  return machine.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
 function stats(samples: number[]): Statistics {
   const sorted = [...samples].sort((a, b) => a - b);
   const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
@@ -138,16 +142,18 @@ const MEMORY_MAP: Record<string, string> = {
 
 export function importRun(raw: RawResults, meta: RunMetadata): BenchmarkRun {
   if (!raw.results.length) throw new Error("No results to import");
-  if (!meta.runId) throw new Error("Missing runId in metadata");
 
   const sections = buildSections(raw.results);
   if (!sections.length) throw new Error("No benchmark sections could be built from the results (partial run?)");
 
+  const machine = `EC2 cluster (${meta.engineType} + 2× ${meta.clientType})`;
+  const publishedAt = raw.generatedAt.split("T")[0]!;
+
   return {
-    id: meta.runId,
+    id: `${publishedAt}-${rigSlug(machine)}`,
     label: `${meta.engineType} cluster (${meta.region})`,
     environment: {
-      machine: `EC2 cluster (${meta.engineType} + 2× ${meta.clientType})`,
+      machine,
       chip: CHIP_MAP[meta.engineType] ?? meta.engineType,
       cores: "64 vCPU engine, 4 vCPU client/origin",
       memory: MEMORY_MAP[meta.engineType] ?? "unknown",
@@ -162,7 +168,7 @@ export function importRun(raw: RawResults, meta: RunMetadata): BenchmarkRun {
       cacheState: "Warm cache after three unmeasured passes",
       output: "TTFB via oha with latency correction",
     },
-    publishedAt: meta.timestamp.split("T")[0]!,
+    publishedAt,
     sections,
   };
 }
