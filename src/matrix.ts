@@ -141,6 +141,10 @@ export function composeFiles(session: Session): string[] {
     files.push(`topology-proxyv2.${session.engine}.yml`);
   }
 
+  if (session.engine === "vinyl" && process.env.VINYL_IMAGE_OVERLAY === "1") {
+    files.push("vinyl-image-overlay.yml");
+  }
+
   return files;
 }
 

@@ -1,6 +1,8 @@
 name: Proxy Bench (Cloud)
 
 on:
+  schedule:
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       engine_type:
@@ -26,13 +28,15 @@ concurrency:
 permissions:
   contents: read
   id-token: write
+  packages: read
 
 env:
-  AWS_REGION: ${{ inputs.region }}
+  AWS_REGION: ${{ inputs.region || 'us-east-1' }}
 
 jobs:
   bench:
     name: Run proxy-bench (${{ inputs.matrix }}, ${{ inputs.engine_type }})
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: proxy-bench
     outputs:
@@ -47,6 +51,7 @@ jobs:
           aws-region: ${{ inputs.region }}
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: proxy-bench-${{ github.run_id }}
+          role-duration-seconds: 7200
 
       - name: Read CDK stack outputs
         id: infra
@@ -96,11 +101,12 @@ jobs:
           }
 
           ORIGIN_ID=$(launch_instance origin "${{ steps.infra.outputs.OriginLaunchTemplateId }}" c7g.xlarge)
-          ENGINE_ID=$(launch_instance engine "${{ steps.infra.outputs.EngineLaunchTemplateId }}" "${{ inputs.engine_type }}")
-          CLIENT_ID=$(launch_instance client "${{ steps.infra.outputs.ClientLaunchTemplateId }}" c7g.xlarge)
-
           echo "origin_id=${ORIGIN_ID}" >> "$GITHUB_OUTPUT"
+
+          ENGINE_ID=$(launch_instance engine "${{ steps.infra.outputs.EngineLaunchTemplateId }}" "${{ inputs.engine_type }}")
           echo "engine_id=${ENGINE_ID}" >> "$GITHUB_OUTPUT"
+
+          CLIENT_ID=$(launch_instance client "${{ steps.infra.outputs.ClientLaunchTemplateId }}" c7g.xlarge)
           echo "client_id=${CLIENT_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Wait for instances running
@@ -165,6 +171,7 @@ jobs:
           ENGINE_IP: ${{ steps.ips.outputs.engine_ip }}
           MATRIX: ${{ inputs.matrix }}
           RUN_ID: ${{ steps.launch.outputs.run_id }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ssm_run() {
             local INSTANCE=$1; shift
@@ -199,7 +206,15 @@ jobs:
           TOPOS_PLAIN=("plaintext")
           TOPOS_FULL=("plaintext" "tls-inprocess" "proxyv2-haproxy")
 
+          VINYL_LOGGED_IN=false
+
           for engine in "${ENGINES[@]}"; do
+            if [ "$engine" = "vinyl" ] && [ "$VINYL_LOGGED_IN" = "false" ]; then
+              ssm_run "$ENGINE_ID" \
+                "echo ${GHCR_TOKEN} | docker login ghcr.io -u x --password-stdin"
+              VINYL_LOGGED_IN=true
+            fi
+
             if [ "$MATRIX" = "smoke" ]; then
               TOPOS=("${TOPOS_PLAIN[@]}")
             else
@@ -217,23 +232,29 @@ jobs:
               elif [ "$topo" = "proxyv2-haproxy" ]; then
                 COMPOSE_FILES="-f compose/docker-compose.${engine}.yml -f compose/topology-proxyv2.yml -f compose/topology-proxyv2.${engine}.yml -f compose/cloud-overlay.yml"
               fi
+              COMPOSE_ENV="ORIGIN_HOST=${ORIGIN_IP}"
+              if [ "$engine" = "vinyl" ]; then
+                COMPOSE_FILES="${COMPOSE_FILES} -f compose/vinyl-image-overlay.yml"
+                COMPOSE_ENV="VINYL_CACHE_DIR=. ${COMPOSE_ENV}"
+              fi
 
               PROJECT="bench-${engine}-${topo}"
               UP_SERVICES="engine"
               if [ "$topo" = "proxyv2-haproxy" ]; then UP_SERVICES="engine haproxy"; fi
 
               ssm_run "$ENGINE_ID" \
-                "cd /opt/proxy-bench && ORIGIN_HOST=${ORIGIN_IP} docker compose --project-directory compose ${COMPOSE_FILES} -p ${PROJECT} up -d --no-deps --build --wait ${UP_SERVICES}"
+                "cd /opt/proxy-bench && ${COMPOSE_ENV} docker compose --project-directory compose ${COMPOSE_FILES} -p ${PROJECT} up -d --no-deps --wait ${UP_SERVICES}"
 
               ssm_run "$CLIENT_ID" \
                 "cd /opt/proxy-bench && ENGINE_HOST=${ENGINE_IP} ORIGIN_HOST=${ORIGIN_IP} ORIGIN_PORT=3000 CLOUD_MODE=1 bun run src/run.ts ${SMOKE_FLAG} --engine=${engine} --topology=${topo} --output=/tmp/results.json" || true
 
               ssm_run "$ENGINE_ID" \
-                "cd /opt/proxy-bench && docker compose --project-directory compose ${COMPOSE_FILES} -p ${PROJECT} down -v --remove-orphans" || true
+                "cd /opt/proxy-bench && ${COMPOSE_ENV} docker compose --project-directory compose ${COMPOSE_FILES} -p ${PROJECT} down -v --remove-orphans" || true
             done
           done
 
       - name: Collect results
+        if: always()
         env:
           CLIENT_ID: ${{ steps.launch.outputs.client_id }}
           RUN_ID: ${{ steps.launch.outputs.run_id }}
@@ -307,9 +328,10 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ inputs.region }}
+          aws-region: ${{ inputs.region || 'us-east-1' }}
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: proxy-bench-reaper-${{ github.run_id }}
+          role-duration-seconds: 7200
 
       - name: Terminate instances older than 3 hours
         run: |
