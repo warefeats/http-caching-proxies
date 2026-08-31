@@ -87,7 +87,7 @@ jobs:
           launch_instance() {
             local ROLE=$1 LT=$2 TYPE=$3
             aws ec2 run-instances \
-              --launch-template "LaunchTemplateId=${LT}" \
+              --launch-template "LaunchTemplateId=${LT},Version=\$Latest" \
               --instance-type "${TYPE}" \
               --subnet-id "${{ steps.az.outputs.subnet }}" \
               --placement "GroupName=${{ steps.infra.outputs.PlacementGroupName }}" \
