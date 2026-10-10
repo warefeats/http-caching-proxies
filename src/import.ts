@@ -204,7 +204,7 @@ function buildW2Section(results: RawResult[]) {
 function buildW3Section(results: RawResult[]) {
   const w3 = results.filter((r) => r.workload === "miss-storm");
   const candidates = w3.map((r) => ({
-    id: r.engine,
+    id: candidateId(r.engine, r.topology),
     name: ENGINE_VERSIONS.get(r.engine) ?? r.engine,
     version: ENGINE_SHORT_VERSIONS.get(r.engine) ?? r.engine,
     ...ENGINE_BRAND[r.engine],
@@ -249,7 +249,7 @@ function buildW3Section(results: RawResult[]) {
 function buildW4Section(results: RawResult[]) {
   const w4 = results.filter((r) => r.workload === "origin-flap");
   const candidates = w4.map((r) => ({
-    id: r.engine,
+    id: candidateId(r.engine, r.topology),
     name: ENGINE_VERSIONS.get(r.engine) ?? r.engine,
     version: ENGINE_SHORT_VERSIONS.get(r.engine) ?? r.engine,
     ...ENGINE_BRAND[r.engine],
