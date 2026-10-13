@@ -1,6 +1,6 @@
 # HTTP Caching Proxies Benchmark
 
-The benchmark runner behind [warefeats.com/benchmarks/http-caching-proxies-hls/](https://warefeats.com/benchmarks/http-caching-proxies-hls/). Measures Varnish Cache, Vinyl Cache, and NGINX head-to-head across four HLS delivery workloads: hit-path TTFB, segment serve, miss-storm coalescing, and origin-flap grace.
+The benchmark runner behind [warefeats.com/posts/2026-08-29-http-caching-proxies-varnish-vs-vinyl-vs-nginx/](https://warefeats.com/posts/2026-08-29-http-caching-proxies-varnish-vs-vinyl-vs-nginx/). Measures Varnish Cache, Vinyl Cache, and NGINX head-to-head across four HLS delivery workloads: hit-path TTFB, segment serve, miss-storm coalescing, and origin-flap grace.
 
 Source: [github.com/warefeats/http-caching-proxies](https://github.com/warefeats/http-caching-proxies)
 
