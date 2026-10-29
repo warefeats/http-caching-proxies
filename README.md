@@ -62,6 +62,8 @@ Or with an explicit results path:
 bun run src/import.ts --results=results.json
 ```
 
+Each test in a run file carries `statistic`, how its value summarizes each candidate's samples (`mean`, `median`, `min`, `max`, or `other` for a value the site cannot recompute, such as a percentile of the per-pass numbers or a ratio), and each result whose per-pass numbers were written to disk carries `samples`, the array the value was computed from, in pass order. A run file published before that contract existed gets both from the same raw results without any value changing: `just enrich runs/<run>.json results.json` rebuilds the run, checks every published value against the rebuild, and appends `statistic` and `samples` to the existing file.
+
 To publish to the site, commit the new run file and `benchmark.json`, then in the site repo (`warefeats/warefeats.com`) bump this slug's `ref` in `web/data/registry.json` to the new SHA, run `bun run sync`, and merge.
 
 ## Results

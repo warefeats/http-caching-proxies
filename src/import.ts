@@ -1,11 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 
-const root = join(import.meta.dirname!, "..");
-const resultsArg = process.argv.find((a) => a.startsWith("--results="))?.split("=")[1];
-const resultsPath = resultsArg ? resolve(resultsArg) : join(root, "results.json");
-
-interface RawResult {
+export interface RawResult {
   label: string;
   engine: string;
   topology: string;
@@ -17,6 +13,35 @@ interface RawResult {
   errorRate: number;
   engineStats: { rssMb: number; cacheHits?: number; cacheMisses?: number; hitRatio?: number };
   metrics: Record<string, { value: number; unit: string; label?: string }>;
+}
+
+export interface RawResults {
+  generatedAt: string;
+  results: RawResult[];
+}
+
+/** How a test's `value` summarizes each candidate's samples. "other": a value the site cannot recompute from the per-pass numbers (a percentile of the per-pass numbers, a ratio); the test's description says what it is. */
+export type TestStatistic = "mean" | "median" | "min" | "max" | "other";
+
+export interface TestResult {
+  candidateId: string;
+  value: number;
+  /** One measurement per measured pass, in the test's unit and in pass order: exactly the array `value` was computed from. */
+  samples?: number[];
+}
+
+export interface BenchmarkTest {
+  id: string;
+  title: string;
+  description: string;
+  unit: string;
+  lowerIsBetter: boolean;
+  results: TestResult[];
+  statistic?: TestStatistic;
+}
+
+export function row(candidateId: string, value: number, samples?: number[]): TestResult {
+  return samples ? { candidateId, value, samples } : { candidateId, value };
 }
 
 function pct(arr: number[], p: number): number {
@@ -76,7 +101,7 @@ const ENGINE_BRAND: Record<string, { logo: string; color: string; homepage: stri
   nginx: { logo: "/logos/nginx.svg", color: "#009639", homepage: "https://nginx.org" },
 };
 
-function buildW1Section(results: RawResult[]) {
+export function buildW1Section(results: RawResult[]) {
   const w1 = results.filter((r) => r.workload === "hit-path-rps");
 
   const candidates = w1.map((r) => ({
@@ -94,6 +119,28 @@ function buildW1Section(results: RawResult[]) {
   const best = sorted[0]!;
   const worst = sorted[sorted.length - 1]!;
 
+  // samplesMs holds one p99 per measured pass; the p50 is the median of per-pass p50s that are never written to disk.
+  const tests: BenchmarkTest[] = [
+    {
+      id: "p50-ttfb",
+      title: "p50 TTFB",
+      description: "50th-percentile time to first byte at 5000 rps",
+      unit: "ms",
+      lowerIsBetter: true,
+      results: candidates.map((c) => row(c.id, c.metrics.p50_ttfb?.value ?? 0)),
+      statistic: "median",
+    },
+    {
+      id: "p99-ttfb",
+      title: "p99 TTFB",
+      description: "99th-percentile time to first byte at 5000 rps",
+      unit: "ms",
+      lowerIsBetter: true,
+      results: candidates.map((c) => row(c.id, c.metrics.p99_ttfb?.value ?? 0, c.samplesMs)),
+      statistic: "median",
+    },
+  ];
+
   return {
     id: "hit-path-rps",
     title: "Hit-path TTFB at 5000 rps",
@@ -106,28 +153,11 @@ function buildW1Section(results: RawResult[]) {
       summary: `5000 rps sustained on a 2 KB manifest, warm cache, 20 measured passes per engine-topology pair.`,
     },
     candidates,
-    tests: [
-      {
-        id: "p50-ttfb",
-        title: "p50 TTFB",
-        description: "50th-percentile time to first byte at 5000 rps",
-        unit: "ms",
-        lowerIsBetter: true,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c.metrics.p50_ttfb?.value ?? 0 })),
-      },
-      {
-        id: "p99-ttfb",
-        title: "p99 TTFB",
-        description: "99th-percentile time to first byte at 5000 rps",
-        unit: "ms",
-        lowerIsBetter: true,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c.metrics.p99_ttfb?.value ?? 0 })),
-      },
-    ],
+    tests,
   };
 }
 
-function buildW2Section(results: RawResult[]) {
+export function buildW2Section(results: RawResult[]) {
   const w2 = results.filter((r) => r.workload === "segment-serve");
 
   const fullResults = w2.filter((r) => !r.metrics.variant);
@@ -151,6 +181,7 @@ function buildW2Section(results: RawResult[]) {
       metrics: r.metrics,
       _rangeP50: rng?.metrics.p50_ttfb?.value ?? 0,
       _rangeP99: rng?.metrics.p99_ttfb?.value ?? 0,
+      _rangeSamples: rng?.samplesMs,
     };
   });
 
@@ -162,7 +193,35 @@ function buildW2Section(results: RawResult[]) {
   const rangeMin = r(Math.min(...rangeP99s), 2);
   const rangeMax = r(Math.max(...rangeP99s), 2);
 
-  const publicCandidates = candidates.map(({ _rangeP50, _rangeP99, ...c }) => c);
+  const publicCandidates = candidates.map(({ _rangeP50, _rangeP99, _rangeSamples, ...c }) => c);
+
+  // Each row's samplesMs holds one p99 per measured pass of its own GET shape; the p50s are medians of per-pass p50s that are never written to disk.
+  const tests: BenchmarkTest[] = [
+    {
+      id: "p50-full-get", title: "p50 full GET",
+      description: "50th-percentile TTFB for 4 MB full GET at 500 rps", unit: "ms", lowerIsBetter: true,
+      results: candidates.map((c) => row(c.id, c.metrics.p50_ttfb?.value ?? 0)),
+      statistic: "median",
+    },
+    {
+      id: "p50-range-get", title: "p50 range GET",
+      description: "50th-percentile TTFB for 64 KB range GET at 500 rps", unit: "ms", lowerIsBetter: true,
+      results: candidates.map((c) => row(c.id, c._rangeP50)),
+      statistic: "median",
+    },
+    {
+      id: "p99-full-get", title: "p99 full GET",
+      description: "99th-percentile TTFB for 4 MB full GET at 500 rps", unit: "ms", lowerIsBetter: true,
+      results: candidates.map((c) => row(c.id, c.metrics.p99_ttfb?.value ?? 0, c.samplesMs)),
+      statistic: "median",
+    },
+    {
+      id: "p99-range-get", title: "p99 range GET",
+      description: "99th-percentile TTFB for 64 KB range GET at 500 rps", unit: "ms", lowerIsBetter: true,
+      results: candidates.map((c) => row(c.id, c._rangeP99, c._rangeSamples)),
+      statistic: "median",
+    },
+  ];
 
   return {
     id: "segment-serve",
@@ -176,32 +235,11 @@ function buildW2Section(results: RawResult[]) {
       summary: `4 MB segment at 500 rps, full GET and 64 KB range, warm cache, across eight engine-topology pairs.`,
     },
     candidates: publicCandidates,
-    tests: [
-      {
-        id: "p50-full-get", title: "p50 full GET",
-        description: "50th-percentile TTFB for 4 MB full GET at 500 rps", unit: "ms", lowerIsBetter: true,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c.metrics.p50_ttfb?.value ?? 0 })),
-      },
-      {
-        id: "p50-range-get", title: "p50 range GET",
-        description: "50th-percentile TTFB for 64 KB range GET at 500 rps", unit: "ms", lowerIsBetter: true,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c._rangeP50 })),
-      },
-      {
-        id: "p99-full-get", title: "p99 full GET",
-        description: "99th-percentile TTFB for 4 MB full GET at 500 rps", unit: "ms", lowerIsBetter: true,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c.metrics.p99_ttfb?.value ?? 0 })),
-      },
-      {
-        id: "p99-range-get", title: "p99 range GET",
-        description: "99th-percentile TTFB for 64 KB range GET at 500 rps", unit: "ms", lowerIsBetter: true,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c._rangeP99 })),
-      },
-    ],
+    tests,
   };
 }
 
-function buildW3Section(results: RawResult[]) {
+export function buildW3Section(results: RawResult[]) {
   const w3 = results.filter((r) => r.workload === "miss-storm");
   const candidates = w3.map((r) => ({
     id: candidateId(r.engine, r.topology),
@@ -214,6 +252,30 @@ function buildW3Section(results: RawResult[]) {
     metrics: r.metrics,
   }));
 
+  candidates.sort((a, b) => a.statistics.medianMs - b.statistics.medianMs);
+
+  // samplesMs holds one p99 per cold burst: the published p50 is their median, the published p99 their 99th percentile.
+  const tests: BenchmarkTest[] = [
+    {
+      id: "p50-ttfb", title: "p50 TTFB",
+      description: "Median over the 20 bursts of each burst's p99 TTFB with 200 clients on a cold segment", unit: "ms", lowerIsBetter: true,
+      results: candidates.map((c) => row(c.id, c.metrics.p50_ttfb?.value ?? 0, c.samplesMs)),
+      statistic: "median",
+    },
+    {
+      id: "p99-ttfb", title: "p99 TTFB",
+      description: "99th percentile over the 20 bursts of each burst's p99 TTFB with 200 clients on a cold segment", unit: "ms", lowerIsBetter: true,
+      results: candidates.map((c) => row(c.id, c.metrics.p99_ttfb?.value ?? 0, c.samplesMs)),
+      statistic: "other",
+    },
+    {
+      id: "coalescing", title: "Coalescing efficiency",
+      description: "Ratio of concurrent clients to origin requests (200x = perfect coalescing)", unit: "x", lowerIsBetter: false,
+      results: candidates.map((c) => row(c.id, c.metrics.coalescing_efficiency?.value ?? 0)),
+      statistic: "other",
+    },
+  ];
+
   return {
     id: "miss-storm",
     title: "Miss-storm coalescing",
@@ -221,32 +283,16 @@ function buildW3Section(results: RawResult[]) {
     unit: "ms",
     lowerIsBetter: true,
     verdict: {
-      winnerId: candidates.sort((a, b) => a.statistics.medianMs - b.statistics.medianMs)[0]!.id,
+      winnerId: candidates[0]!.id,
       headline: "All three engines coalesced 200 concurrent requests to 1 origin fetch",
       summary: "200-client burst on a cold 4 MB segment, 20 repetitions, plaintext only. With proxy_cache_lock_age/timeout set to 30s, NGINX coalesces identically to Varnish and Vinyl.",
     },
     candidates,
-    tests: [
-      {
-        id: "p50-ttfb", title: "p50 TTFB",
-        description: "50th-percentile TTFB per 200-client burst on a cold segment", unit: "ms", lowerIsBetter: true,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c.metrics.p50_ttfb?.value ?? 0 })),
-      },
-      {
-        id: "p99-ttfb", title: "p99 TTFB",
-        description: "99th-percentile TTFB per 200-client burst on a cold segment", unit: "ms", lowerIsBetter: true,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c.metrics.p99_ttfb?.value ?? 0 })),
-      },
-      {
-        id: "coalescing", title: "Coalescing efficiency",
-        description: "Ratio of concurrent clients to origin requests (200x = perfect coalescing)", unit: "x", lowerIsBetter: false,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c.metrics.coalescing_efficiency?.value ?? 0 })),
-      },
-    ],
+    tests,
   };
 }
 
-function buildW4Section(results: RawResult[]) {
+export function buildW4Section(results: RawResult[]) {
   const w4 = results.filter((r) => r.workload === "origin-flap");
   const candidates = w4.map((r) => ({
     id: candidateId(r.engine, r.topology),
@@ -259,6 +305,24 @@ function buildW4Section(results: RawResult[]) {
     metrics: r.metrics,
   }));
 
+  candidates.sort((a, b) => a.statistics.medianMs - b.statistics.medianMs);
+
+  // samplesMs holds one p99 per phase, and the phases mix baseline, flap and recovery, so no test carries them as samples.
+  const tests: BenchmarkTest[] = [
+    {
+      id: "p50-ttfb", title: "p50 TTFB",
+      description: "Median over five cycles' baseline, flap and recovery phases of each phase's p99 TTFB", unit: "ms", lowerIsBetter: true,
+      results: candidates.map((c) => row(c.id, c.metrics.p50_ttfb?.value ?? 0)),
+      statistic: "median",
+    },
+    {
+      id: "grace-ratio", title: "Grace hit ratio",
+      description: "Percentage of requests served from stale cache during origin failure", unit: "%", lowerIsBetter: false,
+      results: candidates.map((c) => row(c.id, c.metrics.grace_ratio?.value ?? 0)),
+      statistic: "other",
+    },
+  ];
+
   return {
     id: "origin-flap",
     title: "Origin-flap grace",
@@ -266,81 +330,73 @@ function buildW4Section(results: RawResult[]) {
     unit: "ms",
     lowerIsBetter: true,
     verdict: {
-      winnerId: candidates.sort((a, b) => a.statistics.medianMs - b.statistics.medianMs)[0]!.id,
+      winnerId: candidates[0]!.id,
       headline: "All three engines maintained 100% grace hit ratio across five origin failure cycles",
       summary: "Five origin failure cycles, grace/stale-if-error responses measured at plaintext.",
     },
     candidates,
-    tests: [
-      {
-        id: "p50-ttfb", title: "p50 TTFB",
-        description: "50th-percentile TTFB during origin failure cycles", unit: "ms", lowerIsBetter: true,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c.metrics.p50_ttfb?.value ?? 0 })),
-      },
-      {
-        id: "grace-ratio", title: "Grace hit ratio",
-        description: "Percentage of requests served from stale cache during origin failure", unit: "%", lowerIsBetter: false,
-        results: candidates.map((c) => ({ candidateId: c.id, value: c.metrics.grace_ratio?.value ?? 0 })),
-      },
-    ],
+    tests,
   };
 }
 
-const raw: { generatedAt: string; results: RawResult[] } = JSON.parse(readFileSync(resultsPath, "utf8"));
+export function buildRun(raw: RawResults) {
+  const machine = "MacBook Pro";
+  const publishedAt = raw.generatedAt.split("T")[0]!;
+  const runId = `${publishedAt}-${rigSlug(machine)}`;
 
-const w1 = buildW1Section(raw.results);
-const w2 = buildW2Section(raw.results);
-const w3 = buildW3Section(raw.results);
-const w4 = buildW4Section(raw.results);
-
-const machine = "MacBook Pro";
-const publishedAt = raw.generatedAt.split("T")[0]!;
-const runId = `${publishedAt}-${rigSlug(machine)}`;
-const runPath = `runs/${runId}.json`;
-
-const run = {
-  schemaVersion: 1,
-  id: runId,
-  label: "M2 Max (local)",
-  publishedAt,
-  environment: {
-    machine,
-    chip: "Apple M2 Max",
-    cores: "12 CPU cores",
-    memory: "96 GB",
-    os: "macOS 26.0",
-    arch: "arm64",
-    runtime: "Docker (OrbStack)",
-  },
-  protocol: {
-    warmups: 3,
-    runs: 20,
-    processModel: "Container per engine, shared origin",
-    cacheState: "Warm cache after three curl requests (W1/W2) or cold by construction (W3)",
-    output: "TTFB via oha 1.16.0 with --latency-correction",
-  },
-  candidates: [] as unknown[],
-  sections: [w1, w2, w3, w4],
-};
-
-mkdirSync(join(root, "runs"), { recursive: true });
-writeFileSync(join(root, runPath), JSON.stringify(run, null, 2) + "\n");
-
-const benchmarkPath = join(root, "benchmark.json");
-if (!existsSync(benchmarkPath)) {
-  console.error(`benchmark.json not found at ${benchmarkPath}`);
-  process.exit(1);
-}
-const benchmark = JSON.parse(readFileSync(benchmarkPath, "utf8"));
-const runs: string[] = benchmark.runs ?? [];
-if (!runs.includes(runPath)) {
-  runs.push(runPath);
-  benchmark.runs = runs;
-  writeFileSync(benchmarkPath, JSON.stringify(benchmark, null, 2) + "\n");
+  return {
+    schemaVersion: 1,
+    id: runId,
+    label: "M2 Max (local)",
+    publishedAt,
+    environment: {
+      machine,
+      chip: "Apple M2 Max",
+      cores: "12 CPU cores",
+      memory: "96 GB",
+      os: "macOS 26.0",
+      arch: "arm64",
+      runtime: "Docker (OrbStack)",
+    },
+    protocol: {
+      warmups: 3,
+      runs: 20,
+      processModel: "Container per engine, shared origin; 3 warmup + 20 measured passes for hit path and segment serve, 20 cold bursts for the miss storm, 5 origin cycles of baseline, flap and recovery for origin flap",
+      cacheState: "Warm cache after three curl requests (W1/W2) or cold by construction (W3)",
+      output: "TTFB via oha 1.16.0 with --latency-correction",
+    },
+    candidates: [] as unknown[],
+    sections: [buildW1Section(raw.results), buildW2Section(raw.results), buildW3Section(raw.results), buildW4Section(raw.results)],
+  };
 }
 
-console.log(`Wrote ${runPath}`);
-console.log(`  W1: ${w1.candidates.length} candidates, winner: ${w1.verdict.winnerId}`);
-console.log(`  W2: ${w2.candidates.length} candidates, winner: ${w2.verdict.winnerId}`);
-console.log(`  W3: ${w3.candidates.length} candidates`);
-console.log(`  W4: ${w4.candidates.length} candidates`);
+if (import.meta.main) {
+  const root = join(import.meta.dirname!, "..");
+  const resultsArg = process.argv.find((a) => a.startsWith("--results="))?.split("=")[1];
+  const resultsPath = resultsArg ? resolve(resultsArg) : join(root, "results.json");
+
+  const raw: RawResults = JSON.parse(readFileSync(resultsPath, "utf8"));
+  const run = buildRun(raw);
+  const runPath = `runs/${run.id}.json`;
+
+  mkdirSync(join(root, "runs"), { recursive: true });
+  writeFileSync(join(root, runPath), JSON.stringify(run, null, 2) + "\n");
+
+  const benchmarkPath = join(root, "benchmark.json");
+  if (!existsSync(benchmarkPath)) {
+    console.error(`benchmark.json not found at ${benchmarkPath}`);
+    process.exit(1);
+  }
+  const benchmark = JSON.parse(readFileSync(benchmarkPath, "utf8"));
+  const runs: string[] = benchmark.runs ?? [];
+  if (!runs.includes(runPath)) {
+    runs.push(runPath);
+    benchmark.runs = runs;
+    writeFileSync(benchmarkPath, JSON.stringify(benchmark, null, 2) + "\n");
+  }
+
+  console.log(`Wrote ${runPath}`);
+  for (const section of run.sections) {
+    console.log(`  ${section.id}: ${section.candidates.length} candidates, winner: ${section.verdict.winnerId}`);
+  }
+}
