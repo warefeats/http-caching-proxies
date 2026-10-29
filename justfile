@@ -27,6 +27,9 @@ import result="results.json":
 import-run result="results.json":
     bun run src/import-run.ts --results={{result}}
 
+enrich run result="results.json":
+    bun run src/enrich.ts --run={{run}} --results={{result}}
+
 # --- cloud benchmark rig ---
 
 export AWS_DEFAULT_REGION := "us-east-1"
