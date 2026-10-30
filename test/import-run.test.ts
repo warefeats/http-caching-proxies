@@ -92,6 +92,31 @@ function stormResults(): RawResults {
   };
 }
 
+const FULL_GET: Record<string, number[]> = {
+  varnish: [2.0, 2.4, 2.2, 2.6, 2.1, 2.3], // median 2.25
+  vinyl: [2.5, 2.9, 2.7, 3.1, 2.6, 2.8], // median 2.75
+};
+const RANGE_GET: Record<string, number[]> = {
+  varnish: [0.4, 0.5, 0.45, 0.47, 0.41, 0.52], // median 0.46
+  vinyl: [0.5, 0.6, 0.55, 0.57, 0.51, 0.62], // median 0.56
+};
+const RANGE_VARIANT = { variant: { value: 1, unit: "", label: "Range GET" } };
+
+/** A segment serve as the runner writes it: a full GET row and a Range GET row per cell, the Range row marked by metrics.variant. */
+function segmentResults(): RawResults {
+  return {
+    ...sampleResults(),
+    sessionCount: 2,
+    resultCount: 4,
+    results: [
+      plaintextCell("varnish", "segment-serve", FULL_GET.varnish!, 1.9, 2.25, {}),
+      plaintextCell("varnish", "segment-serve", RANGE_GET.varnish!, 0.38, 0.46, RANGE_VARIANT),
+      plaintextCell("vinyl", "segment-serve", FULL_GET.vinyl!, 2.3, 2.75, {}),
+      plaintextCell("vinyl", "segment-serve", RANGE_GET.vinyl!, 0.48, 0.56, RANGE_VARIANT),
+    ],
+  };
+}
+
 function sampleMeta(): RunMetadata {
   return {
     runId: "bench-20260830-120000-42",
@@ -237,6 +262,64 @@ describe("per-pass samples", () => {
 function trackedResults(): unknown {
   return JSON.parse(readFileSync(join(import.meta.dirname!, "..", "results.json"), "utf8"));
 }
+
+describe("segment serve", () => {
+  test("Range rows are not candidates: one id per cell, and the winner is the best full GET", () => {
+    const section = importRun(segmentResults(), sampleMeta()).sections![0]!;
+    expect(section.id).toBe("segment-serve");
+    const ids = section.candidates.map((c) => c.id);
+    expect(ids).toEqual(["varnish-plaintext", "vinyl-plaintext"]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(section.candidates.map((c) => c.statistics.medianMs)).toEqual([2.25, 2.75]);
+    expect(section.verdict.winnerId).toBe("varnish-plaintext");
+    expect(section.verdict.summary).toBe("Varnish Cache posted 2.25 ms median.");
+  });
+
+  test("the range tests carry the Range rows' values and passes, the full tests the full rows'", () => {
+    const section = importRun(segmentResults(), sampleMeta()).sections![0]!;
+    expect(section.tests.map((t) => [t.id, t.statistic])).toEqual([["p50-full-get", "median"], ["p50-range-get", "median"], ["p99-full-get", "median"], ["p99-range-get", "median"]]);
+    const results = (id: string) => section.tests.find((t) => t.id === id)!.results;
+    expect(results("p50-full-get")).toEqual([{ candidateId: "varnish-plaintext", value: 1.9 }, { candidateId: "vinyl-plaintext", value: 2.3 }]);
+    expect(results("p50-range-get")).toEqual([{ candidateId: "varnish-plaintext", value: 0.38 }, { candidateId: "vinyl-plaintext", value: 0.48 }]);
+    expect(results("p99-full-get")).toEqual([{ candidateId: "varnish-plaintext", value: 2.25, samples: FULL_GET.varnish }, { candidateId: "vinyl-plaintext", value: 2.75, samples: FULL_GET.vinyl }]);
+    expect(results("p99-range-get")).toEqual([{ candidateId: "varnish-plaintext", value: 0.46, samples: RANGE_GET.varnish }, { candidateId: "vinyl-plaintext", value: 0.56, samples: RANGE_GET.vinyl }]);
+    for (const result of [...results("p99-full-get"), ...results("p99-range-get")]) expect(agrees(result.value, median(result.samples!))).toBe(true);
+  });
+
+  test("a segment serve without Range rows has no range tests", () => {
+    const raw = segmentResults();
+    raw.results = raw.results.filter((r) => !r.metrics.variant);
+    const section = importRun(raw, sampleMeta()).sections![0]!;
+    expect(section.candidates.map((c) => c.id)).toEqual(["varnish-plaintext", "vinyl-plaintext"]);
+    expect(section.tests.map((t) => t.id)).toEqual(["p50-full-get", "p99-full-get"]);
+  });
+
+  test("a cell whose Range GET failed publishes 0 and no samples for its range tests", () => {
+    const raw = segmentResults();
+    raw.results = raw.results.filter((r) => !(r.engine === "vinyl" && r.metrics.variant));
+    const section = importRun(raw, sampleMeta()).sections![0]!;
+    expect(section.candidates.map((c) => c.id)).toEqual(["varnish-plaintext", "vinyl-plaintext"]);
+    expect(section.tests.find((t) => t.id === "p99-range-get")!.results).toEqual([{ candidateId: "varnish-plaintext", value: 0.46, samples: RANGE_GET.varnish }, { candidateId: "vinyl-plaintext", value: 0 }]);
+  });
+
+  test("the tracked results.json imports with one id per cell in every section", () => {
+    const raw = validateResults(trackedResults());
+    const run = importRun(raw, sampleMeta());
+    expect(run.sections!.map((s) => s.id).sort()).toEqual(["hit-path-rps", "miss-storm", "origin-flap", "segment-serve"]);
+    for (const section of run.sections!) {
+      const ids = section.candidates.map((c) => c.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      for (const t of section.tests) expect(t.results.map((r) => r.candidateId)).toEqual(ids);
+    }
+    const segment = run.sections!.find((s) => s.id === "segment-serve")!;
+    expect([...segment.candidates.map((c) => c.id)].sort()).toEqual(["nginx-plaintext", "varnish-plaintext", "vinyl-plaintext"]);
+    expect(segment.tests.map((t) => t.id)).toEqual(["p50-full-get", "p50-range-get", "p99-full-get", "p99-range-get"]);
+    const rangeRow = raw.results.find((r) => r.label === "varnish/plaintext/segment-serve" && r.metrics.variant)!;
+    const varnishRange = segment.tests.find((t) => t.id === "p99-range-get")!.results.find((r) => r.candidateId === "varnish-plaintext");
+    expect(varnishRange).toEqual({ candidateId: "varnish-plaintext", value: 0.985, samples: rangeRow.samplesMs });
+    expect(agrees(0.985, median(rangeRow.samplesMs))).toBe(true);
+  });
+});
 
 describe("isRawResult", () => {
   const valid = () => sampleResults().results[0]!;

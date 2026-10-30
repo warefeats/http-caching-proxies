@@ -176,40 +176,55 @@ export function importRun(raw: RawResults, meta: RunMetadata): BenchmarkRun {
   };
 }
 
-function buildTests(workload: string, candidates: Candidate[]): BenchmarkTest[] {
+/** The tests of one section. `ranges` holds the Range GET row of each candidate's cell, by candidate id, when the workload measured one. */
+function buildTests(workload: string, candidates: Candidate[], ranges: Map<string, RawResult>): BenchmarkTest[] {
   const tests: BenchmarkTest[] = [];
 
-  const add = (key: string, id: string, title: string, desc: string, unit: string, lower: boolean, statistic: TestStatistic, samples: (c: Candidate) => number[] | undefined) => {
-    if (!candidates.some((c) => c.metrics?.[key])) return;
+  const add = (id: string, title: string, desc: string, unit: string, lower: boolean, statistic: TestStatistic, value: (c: Candidate) => number | undefined, samples: (c: Candidate) => number[] | undefined) => {
+    if (!candidates.some((c) => value(c) !== undefined)) return;
     tests.push({
       id, title, description: desc, unit, lowerIsBetter: lower,
-      results: candidates.map((c) => row(c.id, c.metrics?.[key]?.value ?? 0, samples(c))),
+      results: candidates.map((c) => row(c.id, value(c) ?? 0, samples(c))),
       statistic,
     });
   };
+  const metric = (key: string) => (c: Candidate) => c.metrics?.[key]?.value;
+  const rangeMetric = (key: string) => (c: Candidate) => ranges.get(c.id)?.metrics[key]?.value;
   const perPass = (c: Candidate) => c.samplesMs;
+  const rangePasses = (c: Candidate) => ranges.get(c.id)?.samplesMs;
   const none = () => undefined;
 
   switch (workload) {
+    case "segment-serve":
+      // Each row's samplesMs holds one p99 per measured pass of its own GET shape; the p50s are medians of per-pass p50s that are never written to disk.
+      add("p50-full-get", "p50 full GET", "50th-percentile TTFB for the 4 MB full GET", "ms", true, "median", metric("p50_ttfb"), none);
+      add("p50-range-get", "p50 range GET", "50th-percentile TTFB for the 64 KB range GET", "ms", true, "median", rangeMetric("p50_ttfb"), none);
+      add("p99-full-get", "p99 full GET", "99th-percentile TTFB for the 4 MB full GET", "ms", true, "median", metric("p99_ttfb"), perPass);
+      add("p99-range-get", "p99 range GET", "99th-percentile TTFB for the 64 KB range GET", "ms", true, "median", rangeMetric("p99_ttfb"), rangePasses);
+      break;
     case "miss-storm":
       // samplesMs holds one p99 per cold burst: the p50 is their median, the p99 their 99th percentile.
-      add("p50_ttfb", "p50-ttfb", "p50 TTFB", "50th-percentile time to first byte", "ms", true, "median", perPass);
-      add("p99_ttfb", "p99-ttfb", "p99 TTFB", "99th-percentile time to first byte", "ms", true, "other", perPass);
-      add("coalescing_efficiency", "coalescing", "Coalescing efficiency", "Ratio of concurrent clients to origin requests", "x", false, "other", none);
+      add("p50-ttfb", "p50 TTFB", "50th-percentile time to first byte", "ms", true, "median", metric("p50_ttfb"), perPass);
+      add("p99-ttfb", "p99 TTFB", "99th-percentile time to first byte", "ms", true, "other", metric("p99_ttfb"), perPass);
+      add("coalescing", "Coalescing efficiency", "Ratio of concurrent clients to origin requests", "x", false, "other", metric("coalescing_efficiency"), none);
       break;
     case "origin-flap":
       // samplesMs holds one p99 per phase, and the phases mix baseline, flap and recovery, so no test carries them as samples.
-      add("p50_ttfb", "p50-ttfb", "p50 TTFB", "50th-percentile time to first byte", "ms", true, "median", none);
-      add("p99_ttfb", "p99-ttfb", "p99 TTFB", "99th-percentile time to first byte", "ms", true, "other", none);
-      add("grace_ratio", "grace-ratio", "Grace hit ratio", "Percentage of requests served from stale cache during origin failure", "%", false, "other", none);
+      add("p50-ttfb", "p50 TTFB", "50th-percentile time to first byte", "ms", true, "median", metric("p50_ttfb"), none);
+      add("p99-ttfb", "p99 TTFB", "99th-percentile time to first byte", "ms", true, "other", metric("p99_ttfb"), none);
+      add("grace-ratio", "Grace hit ratio", "Percentage of requests served from stale cache during origin failure", "%", false, "other", metric("grace_ratio"), none);
       break;
     default:
       // samplesMs holds one p99 per measured pass; the p50 is the median of per-pass p50s that are never written to disk.
-      add("p50_ttfb", "p50-ttfb", "p50 TTFB", "50th-percentile time to first byte", "ms", true, "median", none);
-      add("p99_ttfb", "p99-ttfb", "p99 TTFB", "99th-percentile time to first byte", "ms", true, "median", perPass);
+      add("p50-ttfb", "p50 TTFB", "50th-percentile time to first byte", "ms", true, "median", metric("p50_ttfb"), none);
+      add("p99-ttfb", "p99 TTFB", "99th-percentile time to first byte", "ms", true, "median", metric("p99_ttfb"), perPass);
   }
 
   return tests;
+}
+
+function candidateId(r: RawResult): string {
+  return `${r.engine}-${r.topology}`;
 }
 
 function buildSections(results: RawResult[]): BenchmarkSection[] {
@@ -218,10 +233,13 @@ function buildSections(results: RawResult[]): BenchmarkSection[] {
 
   for (const workload of workloads) {
     const wResults = results.filter((r) => r.workload === workload && r.topology === "plaintext");
-    if (wResults.length < 2) continue;
+    // A segment serve writes two rows per cell: the Range GET row (metrics.variant) feeds its cell's range tests and is no candidate of its own.
+    const cells = wResults.filter((r) => !r.metrics.variant);
+    const ranges = new Map(wResults.filter((r) => r.metrics.variant).map((r): [string, RawResult] => [candidateId(r), r]));
+    if (cells.length < 2) continue;
 
-    const candidates: Candidate[] = wResults.map((r) => ({
-      id: `${r.engine}-${r.topology}`,
+    const candidates: Candidate[] = cells.map((r) => ({
+      id: candidateId(r),
       name: engineName(r.engine),
       version: "pinned",
       statistics: stats(r.samplesMs),
@@ -248,7 +266,7 @@ function buildSections(results: RawResult[]): BenchmarkSection[] {
         summary: `${best.name} posted ${best.statistics.medianMs} ms median.`,
       },
       candidates,
-      tests: buildTests(workload, candidates),
+      tests: buildTests(workload, candidates, ranges),
     });
   }
 
