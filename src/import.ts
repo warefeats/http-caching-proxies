@@ -177,7 +177,7 @@ export function buildW2Section(results: RawResult[]) {
       ...ENGINE_BRAND[r.engine],
       statistics: stats(r.samplesMs),
       samplesMs: r.samplesMs,
-      configuration: { engine: r.engine, topology: r.topology as "plaintext" | "tls-inprocess" | "proxyv2-haproxy", workload: "segment-serve" as const, targetRps: 500, concurrency: 50 },
+      configuration: { engine: r.engine, topology: r.topology as "plaintext" | "tls-inprocess" | "proxyv2-haproxy", workload: "segment-serve" as const, targetRps: 500, concurrency: 20 },
       metrics: r.metrics,
       _rangeP50: rng?.metrics.p50_ttfb?.value ?? 0,
       _rangeP99: rng?.metrics.p99_ttfb?.value ?? 0,
