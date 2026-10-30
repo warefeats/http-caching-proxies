@@ -284,26 +284,145 @@ function workloadDeck(w: string): string {
   }
 }
 
-export function validateResults(raw: unknown): RawResults {
-  const data = raw as Record<string, unknown>;
-  if (typeof data.resultCount !== "number" || !Array.isArray(data.results)) {
-    throw new Error("Invalid results format: missing resultCount or results array");
+type Guard = (value: unknown) => boolean;
+
+/** One field of a JSON shape: its key, its guard, and what the guard expects, for the error message. */
+type Field<T> = [key: keyof T & string, guard: Guard, expected: string];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function isNumber(value: unknown): value is number {
+  return typeof value === "number";
+}
+
+function isBoolean(value: unknown): value is boolean {
+  return typeof value === "boolean";
+}
+
+function isOptional<T>(guard: (value: unknown) => value is T): (value: unknown) => value is T | undefined {
+  return (value): value is T | undefined => value === undefined || guard(value);
+}
+
+function isArrayOf<T>(guard: (value: unknown) => value is T): (value: unknown) => value is T[] {
+  return (value): value is T[] => Array.isArray(value) && value.every(guard);
+}
+
+/** Why `value` is not the shape `fields` describe, or undefined when it is. */
+function fault<T>(value: unknown, fields: Field<T>[]): string | undefined {
+  if (!isRecord(value)) return "not an object";
+  for (const [key, guard, expected] of fields) {
+    if (guard(value[key])) continue;
+    return value[key] === undefined ? `missing ${key}` : `${key} is not ${expected}`;
   }
-  for (const result of data.results) {
-    const r = result as Record<string, unknown>;
-    if (typeof r.label !== "string" || typeof r.engine !== "string" || !Array.isArray(r.samplesMs)) {
-      throw new Error(`Invalid result entry: ${JSON.stringify(r).slice(0, 100)}`);
+  return undefined;
+}
+
+type Metric = RawResult["metrics"][string];
+
+const METRIC: Field<Metric>[] = [
+  ["value", isNumber, "a number"],
+  ["unit", isString, "a string"],
+  ["label", isOptional(isString), "a string"],
+];
+
+function isMetric(value: unknown): value is Metric {
+  return fault(value, METRIC) === undefined;
+}
+
+function isMetrics(value: unknown): value is RawResult["metrics"] {
+  return isRecord(value) && Object.values(value).every(isMetric);
+}
+
+const ENGINE_STATS: Field<RawResult["engineStats"]>[] = [
+  ["rssMb", isNumber, "a number"],
+  ["cacheHits", isOptional(isNumber), "a number"],
+  ["cacheMisses", isOptional(isNumber), "a number"],
+  ["hitRatio", isOptional(isNumber), "a number"],
+];
+
+function isEngineStats(value: unknown): value is RawResult["engineStats"] {
+  return fault(value, ENGINE_STATS) === undefined;
+}
+
+const RAW_RESULT: Field<RawResult>[] = [
+  ["label", isString, "a string"],
+  ["engine", isString, "a string"],
+  ["topology", isString, "a string"],
+  ["workload", isString, "a string"],
+  ["samplesMs", isArrayOf(isNumber), "an array of numbers"],
+  ["p50Ms", isNumber, "a number"],
+  ["p99Ms", isNumber, "a number"],
+  ["achievedRps", isNumber, "a number"],
+  ["errorRate", isNumber, "a number"],
+  ["engineStats", isEngineStats, "engine stats (rssMb, and cacheHits, cacheMisses and hitRatio when present, all numbers)"],
+  ["metrics", isMetrics, "a map of metrics (value number, unit string, label string when present)"],
+];
+
+export function isRawResult(value: unknown): value is RawResult {
+  return fault(value, RAW_RESULT) === undefined;
+}
+
+type Failure = RawResults["failures"][number];
+
+const FAILURE: Field<Failure>[] = [
+  ["label", isString, "a string"],
+  ["error", isString, "a string"],
+];
+
+function isFailure(value: unknown): value is Failure {
+  return fault(value, FAILURE) === undefined;
+}
+
+const RAW_RESULTS: Field<RawResults>[] = [
+  ["generatedAt", isString, "a string"],
+  ["smoke", isBoolean, "a boolean"],
+  ["sessionCount", isNumber, "a number"],
+  ["resultCount", isNumber, "a number"],
+  ["failureCount", isNumber, "a number"],
+  ["results", isArrayOf(isRawResult), "an array of results"],
+  ["failures", isArrayOf(isFailure), "an array of failures (label and error strings)"],
+];
+
+export function isRawResults(value: unknown): value is RawResults {
+  return fault(value, RAW_RESULTS) === undefined;
+}
+
+const RUN_METADATA: Field<RunMetadata>[] = [
+  ["runId", isString, "a string"],
+  ["engineType", isString, "a string"],
+  ["clientType", isString, "a string"],
+  ["originType", isString, "a string"],
+  ["ami", isString, "a string"],
+  ["region", isString, "a string"],
+  ["matrix", isString, "a string"],
+  ["gitSha", isString, "a string"],
+  ["timestamp", isString, "a string"],
+];
+
+export function isRunMetadata(value: unknown): value is RunMetadata {
+  return fault(value, RUN_METADATA) === undefined;
+}
+
+export function validateResults(raw: unknown): RawResults {
+  if (isRawResults(raw)) return raw;
+  if (isRecord(raw) && Array.isArray(raw.results)) {
+    for (const [i, result] of raw.results.entries()) {
+      const why = fault(result, RAW_RESULT);
+      if (why) throw new Error(`Invalid result entry ${i} (${why}): ${JSON.stringify(result).slice(0, 100)}`);
     }
   }
-  return data as unknown as RawResults;
+  throw new Error(`Invalid results format: ${fault(raw, RAW_RESULTS) ?? "not the runner's results"}`);
 }
 
 export function validateMetadata(raw: unknown): RunMetadata {
-  const data = raw as Record<string, unknown>;
-  if (typeof data.runId !== "string" || typeof data.engineType !== "string") {
-    throw new Error("Invalid metadata: missing runId or engineType");
-  }
-  return data as unknown as RunMetadata;
+  if (isRunMetadata(raw)) return raw;
+  throw new Error(`Invalid metadata: ${fault(raw, RUN_METADATA) ?? "not the rig's metadata"}`);
 }
 
 if (import.meta.main) {

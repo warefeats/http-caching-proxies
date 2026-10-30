@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { importRun, rigSlug, validateResults, validateMetadata } from "../src/import-run";
+import { importRun, isRawResult, isRawResults, isRunMetadata, rigSlug, validateResults, validateMetadata } from "../src/import-run";
 import type { RawResult, RawResults, RunMetadata } from "../src/import-run";
 import { agrees, median } from "../src/enrich";
 
@@ -233,31 +233,137 @@ describe("per-pass samples", () => {
   });
 });
 
-describe("validateResults", () => {
-  test("accepts valid results", () => {
+/** The results file the runner wrote for the published run, as JSON.parse hands it to the importer. */
+function trackedResults(): unknown {
+  return JSON.parse(readFileSync(join(import.meta.dirname!, "..", "results.json"), "utf8"));
+}
+
+describe("isRawResult", () => {
+  const valid = () => sampleResults().results[0]!;
+
+  test("accepts a row the runner wrote", () => {
+    expect(isRawResult(valid())).toBe(true);
+    expect(isRawResult({ ...valid(), engineStats: { rssMb: 98.46, cacheHits: 574911, cacheMisses: 2, hitRatio: 0.9999965 } })).toBe(true);
+  });
+
+  test("rejects a missing field", () => {
+    const { engineStats, ...rest } = valid();
+    expect(isRawResult(rest)).toBe(false);
+    const { metrics, ...noMetrics } = valid();
+    expect(isRawResult(noMetrics)).toBe(false);
+  });
+
+  test("rejects a wrong type", () => {
+    expect(isRawResult({ ...valid(), p99Ms: "0.55" })).toBe(false);
+    expect(isRawResult({ ...valid(), label: 7 })).toBe(false);
+    expect(isRawResult({ ...valid(), engineStats: { rssMb: "100" } })).toBe(false);
+    expect(isRawResult({ ...valid(), engineStats: { rssMb: 100, hitRatio: null } })).toBe(false);
+    expect(isRawResult({ ...valid(), metrics: { p50_ttfb: { value: "0.3", unit: "ms" } } })).toBe(false);
+    expect(isRawResult({ ...valid(), metrics: { p50_ttfb: { value: 0.3 } } })).toBe(false);
+  });
+
+  test("rejects a non-numeric sample", () => {
+    expect(isRawResult({ ...valid(), samplesMs: [0.5, "0.6", 0.55] })).toBe(false);
+    expect(isRawResult({ ...valid(), samplesMs: [0.5, null] })).toBe(false);
+    expect(isRawResult({ ...valid(), samplesMs: "0.5" })).toBe(false);
+  });
+
+  test("rejects what is not an object", () => {
+    expect(isRawResult(null)).toBe(false);
+    expect(isRawResult([valid()])).toBe(false);
+    expect(isRawResult("varnish/plaintext/hit-path-rps")).toBe(false);
+  });
+});
+
+describe("isRawResults", () => {
+  test("accepts the runner's results file", () => {
+    expect(isRawResults(sampleResults())).toBe(true);
+    expect(isRawResults({ ...sampleResults(), failures: [{ label: "nginx/plaintext/miss-storm", error: "oha burst failed" }] })).toBe(true);
+  });
+
+  test("accepts the tracked results.json", () => {
+    expect(isRawResults(trackedResults())).toBe(true);
+  });
+
+  test("rejects a missing field", () => {
+    const { failures, ...rest } = sampleResults();
+    expect(isRawResults(rest)).toBe(false);
+    const { generatedAt, ...noDate } = sampleResults();
+    expect(isRawResults(noDate)).toBe(false);
+  });
+
+  test("rejects a wrong type", () => {
+    expect(isRawResults({ ...sampleResults(), smoke: "no" })).toBe(false);
+    expect(isRawResults({ ...sampleResults(), resultCount: "3" })).toBe(false);
+    expect(isRawResults({ ...sampleResults(), failures: [{ label: "x" }] })).toBe(false);
+    expect(isRawResults({ ...sampleResults(), results: {} })).toBe(false);
+  });
+
+  test("rejects a non-numeric sample in any row", () => {
     const raw = sampleResults();
-    expect(() => validateResults(raw)).not.toThrow();
+    expect(isRawResults({ ...raw, results: [raw.results[0]!, { ...raw.results[1]!, samplesMs: [0.6, "0.7"] }] })).toBe(false);
+  });
+});
+
+describe("isRunMetadata", () => {
+  test("accepts the rig's metadata", () => {
+    expect(isRunMetadata(sampleMeta())).toBe(true);
   });
 
-  test("rejects missing resultCount", () => {
-    expect(() => validateResults({ results: [] })).toThrow("Invalid results format");
+  test("rejects a missing field", () => {
+    const { gitSha, ...rest } = sampleMeta();
+    expect(isRunMetadata(rest)).toBe(false);
+    expect(isRunMetadata({ engineType: "c7g.metal" })).toBe(false);
   });
 
-  test("rejects results with invalid entries", () => {
-    expect(() => validateResults({
-      resultCount: 1,
-      results: [{ notALabel: true }],
-    })).toThrow("Invalid result entry");
+  test("rejects a wrong type", () => {
+    expect(isRunMetadata({ ...sampleMeta(), timestamp: 1756555200 })).toBe(false);
+    expect(isRunMetadata({ ...sampleMeta(), region: null })).toBe(false);
+    expect(isRunMetadata(["bench-20260830-120000-42"])).toBe(false);
+  });
+});
+
+describe("validateResults", () => {
+  test("returns valid results as they are", () => {
+    const raw = sampleResults();
+    expect(validateResults(raw)).toBe(raw);
+    expect(() => validateResults(trackedResults())).not.toThrow();
+  });
+
+  test("names the missing top-level field", () => {
+    expect(() => validateResults({ results: [] })).toThrow("Invalid results format: missing generatedAt");
+    const { resultCount, ...rest } = sampleResults();
+    expect(() => validateResults(rest)).toThrow("Invalid results format: missing resultCount");
+  });
+
+  test("names the wrong top-level type", () => {
+    expect(() => validateResults({ ...sampleResults(), smoke: "no" })).toThrow("Invalid results format: smoke is not a boolean");
+    expect(() => validateResults("[]")).toThrow("Invalid results format: not an object");
+  });
+
+  test("names the entry and its fault", () => {
+    expect(() => validateResults({ resultCount: 1, results: [{ notALabel: true }] })).toThrow("Invalid result entry 0 (missing label)");
+    const raw = sampleResults();
+    expect(() => validateResults({ ...raw, results: [raw.results[0]!, { ...raw.results[1]!, samplesMs: [0.6, "x"] }] }))
+      .toThrow("Invalid result entry 1 (samplesMs is not an array of numbers)");
+    expect(() => validateResults({ ...raw, results: [{ ...raw.results[0]!, engineStats: { rssMb: "100" } }] }))
+      .toThrow("Invalid result entry 0 (engineStats is not engine stats");
   });
 });
 
 describe("validateMetadata", () => {
-  test("accepts valid metadata", () => {
-    expect(() => validateMetadata(sampleMeta())).not.toThrow();
+  test("returns valid metadata as it is", () => {
+    const meta = sampleMeta();
+    expect(validateMetadata(meta)).toBe(meta);
   });
 
-  test("rejects missing runId", () => {
-    expect(() => validateMetadata({ engineType: "c7g.metal" })).toThrow("missing runId");
+  test("names the missing field", () => {
+    expect(() => validateMetadata({ engineType: "c7g.metal" })).toThrow("Invalid metadata: missing runId");
+  });
+
+  test("names the wrong type", () => {
+    expect(() => validateMetadata({ ...sampleMeta(), region: 1 })).toThrow("Invalid metadata: region is not a string");
+    expect(() => validateMetadata(null)).toThrow("Invalid metadata: not an object");
   });
 });
 
