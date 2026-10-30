@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { importRun, rigSlug, validateResults, validateMetadata } from "../src/import-run";
+import { importRun, isRawResult, isRawResults, isRunMetadata, rigSlug, validateResults, validateMetadata } from "../src/import-run";
 import type { RawResult, RawResults, RunMetadata } from "../src/import-run";
 import { agrees, median } from "../src/enrich";
 
@@ -88,6 +88,31 @@ function stormResults(): RawResults {
       plaintextCell("vinyl", "miss-storm", shifted(BURSTS, -100), 647.5, 708.1, { coalescing_efficiency: { value: 200, unit: "x" } }),
       plaintextCell("varnish", "origin-flap", PHASES, 6.1, 7.072, { grace_ratio: { value: 100, unit: "%" } }),
       plaintextCell("vinyl", "origin-flap", shifted(PHASES, 1), 7.1, 8.072, { grace_ratio: { value: 100, unit: "%" } }),
+    ],
+  };
+}
+
+const FULL_GET: Record<string, number[]> = {
+  varnish: [2.0, 2.4, 2.2, 2.6, 2.1, 2.3], // median 2.25
+  vinyl: [2.5, 2.9, 2.7, 3.1, 2.6, 2.8], // median 2.75
+};
+const RANGE_GET: Record<string, number[]> = {
+  varnish: [0.4, 0.5, 0.45, 0.47, 0.41, 0.52], // median 0.46
+  vinyl: [0.5, 0.6, 0.55, 0.57, 0.51, 0.62], // median 0.56
+};
+const RANGE_VARIANT = { variant: { value: 1, unit: "", label: "Range GET" } };
+
+/** A segment serve as the runner writes it: a full GET row and a Range GET row per cell, the Range row marked by metrics.variant. */
+function segmentResults(): RawResults {
+  return {
+    ...sampleResults(),
+    sessionCount: 2,
+    resultCount: 4,
+    results: [
+      plaintextCell("varnish", "segment-serve", FULL_GET.varnish!, 1.9, 2.25, {}),
+      plaintextCell("varnish", "segment-serve", RANGE_GET.varnish!, 0.38, 0.46, RANGE_VARIANT),
+      plaintextCell("vinyl", "segment-serve", FULL_GET.vinyl!, 2.3, 2.75, {}),
+      plaintextCell("vinyl", "segment-serve", RANGE_GET.vinyl!, 0.48, 0.56, RANGE_VARIANT),
     ],
   };
 }
@@ -233,31 +258,195 @@ describe("per-pass samples", () => {
   });
 });
 
-describe("validateResults", () => {
-  test("accepts valid results", () => {
+/** The results file the runner wrote for the published run, as JSON.parse hands it to the importer. */
+function trackedResults(): unknown {
+  return JSON.parse(readFileSync(join(import.meta.dirname!, "..", "results.json"), "utf8"));
+}
+
+describe("segment serve", () => {
+  test("Range rows are not candidates: one id per cell, and the winner is the best full GET", () => {
+    const section = importRun(segmentResults(), sampleMeta()).sections![0]!;
+    expect(section.id).toBe("segment-serve");
+    const ids = section.candidates.map((c) => c.id);
+    expect(ids).toEqual(["varnish-plaintext", "vinyl-plaintext"]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(section.candidates.map((c) => c.statistics.medianMs)).toEqual([2.25, 2.75]);
+    expect(section.verdict.winnerId).toBe("varnish-plaintext");
+    expect(section.verdict.summary).toBe("Varnish Cache posted 2.25 ms median.");
+  });
+
+  test("the range tests carry the Range rows' values and passes, the full tests the full rows'", () => {
+    const section = importRun(segmentResults(), sampleMeta()).sections![0]!;
+    expect(section.tests.map((t) => [t.id, t.statistic])).toEqual([["p50-full-get", "median"], ["p50-range-get", "median"], ["p99-full-get", "median"], ["p99-range-get", "median"]]);
+    const results = (id: string) => section.tests.find((t) => t.id === id)!.results;
+    expect(results("p50-full-get")).toEqual([{ candidateId: "varnish-plaintext", value: 1.9 }, { candidateId: "vinyl-plaintext", value: 2.3 }]);
+    expect(results("p50-range-get")).toEqual([{ candidateId: "varnish-plaintext", value: 0.38 }, { candidateId: "vinyl-plaintext", value: 0.48 }]);
+    expect(results("p99-full-get")).toEqual([{ candidateId: "varnish-plaintext", value: 2.25, samples: FULL_GET.varnish }, { candidateId: "vinyl-plaintext", value: 2.75, samples: FULL_GET.vinyl }]);
+    expect(results("p99-range-get")).toEqual([{ candidateId: "varnish-plaintext", value: 0.46, samples: RANGE_GET.varnish }, { candidateId: "vinyl-plaintext", value: 0.56, samples: RANGE_GET.vinyl }]);
+    for (const result of [...results("p99-full-get"), ...results("p99-range-get")]) expect(agrees(result.value, median(result.samples!))).toBe(true);
+  });
+
+  test("a segment serve without Range rows has no range tests", () => {
+    const raw = segmentResults();
+    raw.results = raw.results.filter((r) => !r.metrics.variant);
+    const section = importRun(raw, sampleMeta()).sections![0]!;
+    expect(section.candidates.map((c) => c.id)).toEqual(["varnish-plaintext", "vinyl-plaintext"]);
+    expect(section.tests.map((t) => t.id)).toEqual(["p50-full-get", "p99-full-get"]);
+  });
+
+  test("a cell whose Range GET failed publishes 0 and no samples for its range tests", () => {
+    const raw = segmentResults();
+    raw.results = raw.results.filter((r) => !(r.engine === "vinyl" && r.metrics.variant));
+    const section = importRun(raw, sampleMeta()).sections![0]!;
+    expect(section.candidates.map((c) => c.id)).toEqual(["varnish-plaintext", "vinyl-plaintext"]);
+    expect(section.tests.find((t) => t.id === "p99-range-get")!.results).toEqual([{ candidateId: "varnish-plaintext", value: 0.46, samples: RANGE_GET.varnish }, { candidateId: "vinyl-plaintext", value: 0 }]);
+  });
+
+  test("the tracked results.json imports with one id per cell in every section", () => {
+    const raw = validateResults(trackedResults());
+    const run = importRun(raw, sampleMeta());
+    expect(run.sections!.map((s) => s.id).sort()).toEqual(["hit-path-rps", "miss-storm", "origin-flap", "segment-serve"]);
+    for (const section of run.sections!) {
+      const ids = section.candidates.map((c) => c.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      for (const t of section.tests) expect(t.results.map((r) => r.candidateId)).toEqual(ids);
+    }
+    const segment = run.sections!.find((s) => s.id === "segment-serve")!;
+    expect([...segment.candidates.map((c) => c.id)].sort()).toEqual(["nginx-plaintext", "varnish-plaintext", "vinyl-plaintext"]);
+    expect(segment.tests.map((t) => t.id)).toEqual(["p50-full-get", "p50-range-get", "p99-full-get", "p99-range-get"]);
+    const rangeRow = raw.results.find((r) => r.label === "varnish/plaintext/segment-serve" && r.metrics.variant)!;
+    const varnishRange = segment.tests.find((t) => t.id === "p99-range-get")!.results.find((r) => r.candidateId === "varnish-plaintext");
+    expect(varnishRange).toEqual({ candidateId: "varnish-plaintext", value: 0.985, samples: rangeRow.samplesMs });
+    expect(agrees(0.985, median(rangeRow.samplesMs))).toBe(true);
+  });
+});
+
+describe("isRawResult", () => {
+  const valid = () => sampleResults().results[0]!;
+
+  test("accepts a row the runner wrote", () => {
+    expect(isRawResult(valid())).toBe(true);
+    expect(isRawResult({ ...valid(), engineStats: { rssMb: 98.46, cacheHits: 574911, cacheMisses: 2, hitRatio: 0.9999965 } })).toBe(true);
+  });
+
+  test("rejects a missing field", () => {
+    const { engineStats, ...rest } = valid();
+    expect(isRawResult(rest)).toBe(false);
+    const { metrics, ...noMetrics } = valid();
+    expect(isRawResult(noMetrics)).toBe(false);
+  });
+
+  test("rejects a wrong type", () => {
+    expect(isRawResult({ ...valid(), p99Ms: "0.55" })).toBe(false);
+    expect(isRawResult({ ...valid(), label: 7 })).toBe(false);
+    expect(isRawResult({ ...valid(), engineStats: { rssMb: "100" } })).toBe(false);
+    expect(isRawResult({ ...valid(), engineStats: { rssMb: 100, hitRatio: null } })).toBe(false);
+    expect(isRawResult({ ...valid(), metrics: { p50_ttfb: { value: "0.3", unit: "ms" } } })).toBe(false);
+    expect(isRawResult({ ...valid(), metrics: { p50_ttfb: { value: 0.3 } } })).toBe(false);
+  });
+
+  test("rejects a non-numeric sample", () => {
+    expect(isRawResult({ ...valid(), samplesMs: [0.5, "0.6", 0.55] })).toBe(false);
+    expect(isRawResult({ ...valid(), samplesMs: [0.5, null] })).toBe(false);
+    expect(isRawResult({ ...valid(), samplesMs: "0.5" })).toBe(false);
+  });
+
+  test("rejects what is not an object", () => {
+    expect(isRawResult(null)).toBe(false);
+    expect(isRawResult([valid()])).toBe(false);
+    expect(isRawResult("varnish/plaintext/hit-path-rps")).toBe(false);
+  });
+});
+
+describe("isRawResults", () => {
+  test("accepts the runner's results file", () => {
+    expect(isRawResults(sampleResults())).toBe(true);
+    expect(isRawResults({ ...sampleResults(), failures: [{ label: "nginx/plaintext/miss-storm", error: "oha burst failed" }] })).toBe(true);
+  });
+
+  test("accepts the tracked results.json", () => {
+    expect(isRawResults(trackedResults())).toBe(true);
+  });
+
+  test("rejects a missing field", () => {
+    const { failures, ...rest } = sampleResults();
+    expect(isRawResults(rest)).toBe(false);
+    const { generatedAt, ...noDate } = sampleResults();
+    expect(isRawResults(noDate)).toBe(false);
+  });
+
+  test("rejects a wrong type", () => {
+    expect(isRawResults({ ...sampleResults(), smoke: "no" })).toBe(false);
+    expect(isRawResults({ ...sampleResults(), resultCount: "3" })).toBe(false);
+    expect(isRawResults({ ...sampleResults(), failures: [{ label: "x" }] })).toBe(false);
+    expect(isRawResults({ ...sampleResults(), results: {} })).toBe(false);
+  });
+
+  test("rejects a non-numeric sample in any row", () => {
     const raw = sampleResults();
-    expect(() => validateResults(raw)).not.toThrow();
+    expect(isRawResults({ ...raw, results: [raw.results[0]!, { ...raw.results[1]!, samplesMs: [0.6, "0.7"] }] })).toBe(false);
+  });
+});
+
+describe("isRunMetadata", () => {
+  test("accepts the rig's metadata", () => {
+    expect(isRunMetadata(sampleMeta())).toBe(true);
   });
 
-  test("rejects missing resultCount", () => {
-    expect(() => validateResults({ results: [] })).toThrow("Invalid results format");
+  test("rejects a missing field", () => {
+    const { gitSha, ...rest } = sampleMeta();
+    expect(isRunMetadata(rest)).toBe(false);
+    expect(isRunMetadata({ engineType: "c7g.metal" })).toBe(false);
   });
 
-  test("rejects results with invalid entries", () => {
-    expect(() => validateResults({
-      resultCount: 1,
-      results: [{ notALabel: true }],
-    })).toThrow("Invalid result entry");
+  test("rejects a wrong type", () => {
+    expect(isRunMetadata({ ...sampleMeta(), timestamp: 1756555200 })).toBe(false);
+    expect(isRunMetadata({ ...sampleMeta(), region: null })).toBe(false);
+    expect(isRunMetadata(["bench-20260830-120000-42"])).toBe(false);
+  });
+});
+
+describe("validateResults", () => {
+  test("returns valid results as they are", () => {
+    const raw = sampleResults();
+    expect(validateResults(raw)).toBe(raw);
+    expect(() => validateResults(trackedResults())).not.toThrow();
+  });
+
+  test("names the missing top-level field", () => {
+    expect(() => validateResults({ results: [] })).toThrow("Invalid results format: missing generatedAt");
+    const { resultCount, ...rest } = sampleResults();
+    expect(() => validateResults(rest)).toThrow("Invalid results format: missing resultCount");
+  });
+
+  test("names the wrong top-level type", () => {
+    expect(() => validateResults({ ...sampleResults(), smoke: "no" })).toThrow("Invalid results format: smoke is not a boolean");
+    expect(() => validateResults("[]")).toThrow("Invalid results format: not an object");
+  });
+
+  test("names the entry and its fault", () => {
+    expect(() => validateResults({ resultCount: 1, results: [{ notALabel: true }] })).toThrow("Invalid result entry 0 (missing label)");
+    const raw = sampleResults();
+    expect(() => validateResults({ ...raw, results: [raw.results[0]!, { ...raw.results[1]!, samplesMs: [0.6, "x"] }] }))
+      .toThrow("Invalid result entry 1 (samplesMs is not an array of numbers)");
+    expect(() => validateResults({ ...raw, results: [{ ...raw.results[0]!, engineStats: { rssMb: "100" } }] }))
+      .toThrow("Invalid result entry 0 (engineStats is not engine stats");
   });
 });
 
 describe("validateMetadata", () => {
-  test("accepts valid metadata", () => {
-    expect(() => validateMetadata(sampleMeta())).not.toThrow();
+  test("returns valid metadata as it is", () => {
+    const meta = sampleMeta();
+    expect(validateMetadata(meta)).toBe(meta);
   });
 
-  test("rejects missing runId", () => {
-    expect(() => validateMetadata({ engineType: "c7g.metal" })).toThrow("missing runId");
+  test("names the missing field", () => {
+    expect(() => validateMetadata({ engineType: "c7g.metal" })).toThrow("Invalid metadata: missing runId");
+  });
+
+  test("names the wrong type", () => {
+    expect(() => validateMetadata({ ...sampleMeta(), region: 1 })).toThrow("Invalid metadata: region is not a string");
+    expect(() => validateMetadata(null)).toThrow("Invalid metadata: not an object");
   });
 });
 

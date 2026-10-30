@@ -5,6 +5,7 @@ import { join } from "path";
 import { buildRun, buildW1Section, buildW2Section, buildW3Section, buildW4Section } from "../src/import";
 import type { BenchmarkTest, RawResult, RawResults, TestStatistic } from "../src/import";
 import { agrees, enrich, median, summarize, tolerance } from "../src/enrich";
+import { workloadConfig } from "../src/matrix";
 
 // Per-pass p99s as the runner writes them to samplesMs: hit path and segment serve per measured pass,
 // the miss storm per cold burst, the origin flap per phase of each cycle.
@@ -284,5 +285,36 @@ describe("enrich", () => {
     const otherSamples = buildRun(raw);
     otherSamples.sections[0]!.tests[1]!.results[0]!.samples = [0.5, 0.6, 0.55, 0.53, 0.58];
     expect(() => enrich(serialize(otherSamples), raw)).toThrow("result hit-path-rps/p99-ttfb/varnish-plaintext: already has different samples");
+  });
+});
+
+describe("the configurations", () => {
+  test("state the rate and concurrency the runner uses for the hit path and the segment serve", () => {
+    const { results } = sampleResults();
+    const w1 = workloadConfig("hit-path-rps");
+    const w2 = workloadConfig("segment-serve");
+    for (const c of buildW1Section(results).candidates) expect([c.configuration.targetRps, c.configuration.concurrency]).toEqual([w1.rps, w1.concurrency]);
+    for (const c of buildW2Section(results).candidates) expect([c.configuration.targetRps, c.configuration.concurrency]).toEqual([w2.rps, w2.concurrency]);
+    for (const c of buildW3Section(results).candidates) expect(c.configuration.concurrency).toBe(workloadConfig("miss-storm").concurrency);
+    for (const c of buildW4Section(results).candidates) expect(c.configuration.concurrency).toBe(workloadConfig("origin-flap").concurrency);
+  });
+});
+
+describe("the published run", () => {
+  test("runs/2026-08-29-m2max.json says what the importer computes from results.json", () => {
+    const root = join(import.meta.dirname!, "..");
+    const published: unknown = JSON.parse(readFileSync(join(root, "runs/2026-08-29-m2max.json"), "utf8"));
+    const raw: RawResults = JSON.parse(readFileSync(join(root, "results.json"), "utf8"));
+    const fresh = buildRun(raw);
+    expect(published).toMatchObject({
+      protocol: fresh.protocol,
+      sections: fresh.sections.map((s) => ({
+        id: s.id,
+        title: s.title,
+        deck: s.deck,
+        candidates: s.candidates.map((c) => ({ id: c.id, configuration: c.configuration })),
+        tests: s.tests.map((t) => ({ id: t.id, title: t.title, description: t.description, unit: t.unit, lowerIsBetter: t.lowerIsBetter, statistic: t.statistic })),
+      })),
+    });
   });
 });
